@@ -1,0 +1,13 @@
+*
+!/**/
+!*.*
+![M,m]akefile
+*.o
+*.a
+*.so
+*.elf
+*.bak
+*.temp
+camcontrol
+CMake*
+cmake_install.cmake
