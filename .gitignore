@@ -1,7 +1,7 @@
 *
 !/**/
 !*.*
-![M,m]akefile
+[M,m]akefile
 *.o
 *.a
 *.so
@@ -9,5 +9,6 @@
 *.bak
 *.temp
 camcontrol
-CMake*
+CMakeCache.txt
+CMakeFiles
 cmake_install.cmake
