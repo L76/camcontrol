@@ -224,13 +224,13 @@ void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
 
         for (int j=0; j<resolution_h; j++) {
             for (int i=0; i<resolution_w; i++) {
-				unsigned char *pixel = getPixel(frame_shadow[arg->camId], j, i, resolution_w, 3);
-				unsigned char g = (255-pixel[0]);
-				pixel[0] = g; pixel[1] = g; pixel[2] = g;
-			}
-		}
+                unsigned char *pixel = getPixel(frame_shadow[arg->camId], j, i, resolution_w, 3);
+                unsigned char g = (255-pixel[0]);
+                pixel[0] = g; pixel[1] = g; pixel[2] = g;
+            }
+        }
 
-		//RGB24RedtoGrayscale8(frame_shadow[arg->camId], frame_shadow[arg->camId], resolution_h, resolution_w);
+        //RGB24RedtoGrayscale8(frame_shadow[arg->camId], frame_shadow[arg->camId], resolution_h, resolution_w);
         SWAP(frame_shadow[arg->camId], frame[arg->camId]);
     }
 
