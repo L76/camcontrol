@@ -129,6 +129,16 @@ void RGB24toGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w) 
     }
 }
 
+void RGB24RedtoGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w) {
+    int bytesPerPixel = 3;
+    for (int i=0; i<h; i++) {
+        for (int j=0; j<w; j++) {
+            uint8_t _gray = 255-inputFrame[ (i *w + j)*bytesPerPixel];
+            outputFrame[i *w + j] = _gray;
+        }
+    }
+}
+
 static void PngWriteCallback(png_structp  png_ptr, png_bytep data, png_size_t length) {
     void * p = png_get_io_ptr(png_ptr);
     //printf("Insert png data into %p, data %p, size = %d\r\n", p, data, length);

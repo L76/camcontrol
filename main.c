@@ -164,7 +164,7 @@ void update_progress_bar()
         gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), fraction);
     } else
         snprintf(&text[0], smax, "Frames recorded: %d(%d)/%d", FramesRecorded[0], FramesRecorded[1], frames_record_max);
-   
+
     gtk_progress_bar_set_text (GTK_PROGRESS_BAR(progress_bar), text);
 
 }
@@ -206,9 +206,9 @@ unsigned char *getPixel(unsigned char *pixdata, int j, int i, int w, int bps) {
 
 void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
     AcqCbArg_T *arg = pFrameData->pUserParam;
-    
+
     if (!write_on) {
-        //printf("Callback: cam: %u Width: %d Height: %d FrameID: %lu>\n", 
+        //printf("Callback: cam: %u Width: %d Height: %d FrameID: %lu>\n",
         //                arg->camId, pFrameData->nWidth, pFrameData->nHeight, pFrameData->nFrameID);
 
         //printf("Frame status=%d\r\n", pFrameData->status);
@@ -221,6 +221,16 @@ void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
                 getPixel(pixdata, j*3, i*3, W, 3),
                 3);
         }
+
+        for (int j=0; j<resolution_h; j++) {
+            for (int i=0; i<resolution_w; i++) {
+				unsigned char *pixel = getPixel(frame_shadow[arg->camId], j, i, resolution_w, 3);
+				unsigned char g = (255-pixel[0]);
+				pixel[0] = g; pixel[1] = g; pixel[2] = g;
+			}
+		}
+
+		//RGB24RedtoGrayscale8(frame_shadow[arg->camId], frame_shadow[arg->camId], resolution_h, resolution_w);
         SWAP(frame_shadow[arg->camId], frame[arg->camId]);
     }
 
@@ -233,7 +243,7 @@ void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
             exit(1);
         }
         fprintf(stdout, "Cam-%d frame %d\r\n", arg->camId, FramesRecorded[arg->camId]);
-        RGB24toGrayscale8(arg->pState->RBGimageBuf, frameData, pFrameData->nHeight, pFrameData->nWidth);
+        RGB24RedtoGrayscale8(arg->pState->RBGimageBuf, frameData, pFrameData->nHeight, pFrameData->nWidth);
         g_queue_push_tail(frameQ[arg->camId], (gpointer) frameData);
         FramesRecorded[arg->camId] ++;
         if (FramesRecorded[arg->camId] >= frames_record_max) {
@@ -246,7 +256,7 @@ void* camera_task (void * param) {
 
     for (int k=0; k<2; k++)
         frameQ[k] = g_queue_new();
-    
+
     uint32_t nDev = 0;
     GX_STATUS status = GXUpdateDeviceList(&nDev, 1000);
     printf("Devices found:%d\r\n", nDev);
@@ -272,7 +282,7 @@ void* camera_task (void * param) {
     printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
 
     printf("CAM0-id: %s; CAM1-id: %s\r\n", idText[0], idText[1]);
-    
+
     static const char cam0_id[] = "FDE24060215";
     if (strncmp(idText[0], cam0_id, MIN(sizeof(cam0_id), nSize[0]))) {
         printf("SWAPING CAMERAS!\r\n");
@@ -302,21 +312,21 @@ void* camera_task (void * param) {
         camStatus[i] = GXSetFloat(cam[i], GX_FLOAT_GAIN, Gain);
     }
 
-    if (camStatus[0] != GX_STATUS_SUCCESS || 
+    if (camStatus[0] != GX_STATUS_SUCCESS ||
         camStatus[1] != GX_STATUS_SUCCESS)  {
         pthread_exit(NULL);
     }
 
     printf("Opened both\r\n");
-   
+
     camStatus[0] = GXSetBool(cam[0], GX_BOOL_REVERSE_X, FALSE);
     camStatus[1] = GXSetBool(cam[1], GX_BOOL_REVERSE_X, TRUE);
     printf("%d REVERCE_X: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
-    
+
     camStatus[0] = GXSetBool(cam[0], GX_BOOL_REVERSE_Y, FALSE);
     camStatus[0] = GXSetBool(cam[1], GX_BOOL_REVERSE_Y, TRUE);
     printf("%d REVERSE_Y: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
-    
+
     camStatus[0] = GXSetEnum(cam[0], GX_ENUM_TRIGGER_MODE, GX_TRIGGER_MODE_ON);
     camStatus[1] = GXSetEnum(cam[1], GX_ENUM_TRIGGER_MODE, GX_TRIGGER_MODE_ON);
     printf("%d: Trigger Mode ON: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
@@ -352,7 +362,7 @@ void* camera_task (void * param) {
 
             // TODO: use glib functions
             for (int k=0; k<2; k++) {
-                
+
                 while (!g_queue_is_empty(frameQ[k])) {
                     unsigned char *frameData = g_queue_pop_head(frameQ[k]);
                     DynamicBuffer_T *io = savePngToMem(frameData, 1920, 1200);
@@ -372,7 +382,7 @@ void* camera_task (void * param) {
             FramesRecorded[1] = 0;
             write_on = FALSE;
             WriteComplete = TRUE;
-        } 
+        }
         else if (settings_changed) {
             for (int k=0; k<2; k++) {
             //Set exposure

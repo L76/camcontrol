@@ -24,6 +24,8 @@ int PixelFormatConvert(PixelProcState_T *state, GX_FRAME_CALLBACK_PARAM *pFrameB
 
 void RGB24toGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w);
 
+void RGB24RedtoGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w);
+
 void * savePngToMem(unsigned char *frame, uint32_t w, uint32_t h);
 
 #endif
