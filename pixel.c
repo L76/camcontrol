@@ -28,11 +28,11 @@ PixelProcState_T * PixelProcInit(int64_t frameSize, int64_t colorFilter) {
 /*
 
 
-#define VERIFY_STATUS_RET(emStatus)\ 
-if(emStatus != GX_STATUS_SUCCESS)\ 
-{\ 
-  return emStatus;\ 
-}\ 
+#define VERIFY_STATUS_RET(emStatus)\
+if(emStatus != GX_STATUS_SUCCESS)\
+{\
+  return emStatus;\
+}\
 GX_STATUS emStatus = GX_STATUS_SUCCESS;
 
 emStatus = GXSetBool(m_hDevice, GX_BOOL_REVERSE_Y, false);
@@ -134,6 +134,16 @@ void RGB24RedtoGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int 
     for (int i=0; i<h; i++) {
         for (int j=0; j<w; j++) {
             uint8_t _gray = 255-inputFrame[ (i *w + j)*bytesPerPixel];
+            outputFrame[i *w + j] = _gray;
+        }
+    }
+}
+
+void RGB24GreentoGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w) {
+    int bytesPerPixel = 3;
+    for (int i=0; i<h; i++) {
+        for (int j=0; j<w; j++) {
+            uint8_t _gray = 255-inputFrame[ (i *w + j)*bytesPerPixel+1];
             outputFrame[i *w + j] = _gray;
         }
     }

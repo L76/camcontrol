@@ -13,6 +13,8 @@
 #include <glib/gstdio.h>
 
 #define MEMORY_LIMIT (size_t) (4 * 1024 * 1024 * 1024)
+#define FRAME_W 1920
+#define FRAME_H 1200
 
 typedef struct {
     int camId;
@@ -31,11 +33,33 @@ typedef struct {
     GtkWidget *applyBtn;
 } ButtonIface_T;
 
+/*
+typedef struct {
+    uint8_t rgb[3];
+} RGB24Pixel_T;
+*/
+
+typedef struct {
+    uint64_t id;
+    uint8_t data[FRAME_W*FRAME_H*3];
+} StoredFrame_T;
+
+typedef struct {
+    uint64_t id;
+    uint8_t data[FRAME_W*FRAME_H];
+} StoredFrameMono_T;
 
 static int FramesRecorded[2] = {0, 0};
 static int FramesStored[2] = {0, 0};
 static struct tm CurrentDateTime = {0};
 static char DirSuffix[32] = {0};
+
+static GAsyncQueue *DisplayQ[2];
+static GAsyncQueue *RecordQ[2];
+static GAsyncQueue *frameQ[2];
+
+static const int CamId0 = 0;
+static const int CamId1 = 1;
 
 struct tm currentDateTime() {
     time_t     now = time(0);
@@ -67,9 +91,8 @@ void rgb_bitmap_free (unsigned char *bitmap)
 GtkImage *image0, *image1;
 GtkWidget *progress_bar;
 GError *error = NULL;
-static GQueue *frameQ[2] = {NULL};
 
-const int resolution_w = 1920/3, resolution_h = 1200/3;
+const int resolution_w = FRAME_W/3, resolution_h = FRAME_H/3;
 
 gboolean record_on = FALSE, write_on = FALSE;
 gboolean WriteComplete = FALSE;
@@ -79,6 +102,8 @@ unsigned char *frame[2], *frame_shadow[2];
 int frames_record_max;
 double Gain = 23.0;
 double Exposition = 2000;
+
+char dirname[64 + 1] = {0};
 
 static void button_record (GtkWidget *widget, gpointer data)
 {
@@ -105,6 +130,10 @@ static void button_save (GtkWidget *widget, gpointer data)
   write_on = TRUE;
   ButtonIface_T *buttons = (ButtonIface_T *) data;
   gtk_widget_set_sensitive(buttons->recordBtn, false);
+
+  strftime(dirname, 32, "%Y-%m-%d.%H:%M:%S", &CurrentDateTime);
+  strncat(dirname + strlen(dirname), DirSuffix, sizeof(DirSuffix)-1);
+  g_mkdir(dirname, 0777);
 }
 
 static void button_reset (GtkWidget *widget, gpointer data)
@@ -113,9 +142,9 @@ static void button_reset (GtkWidget *widget, gpointer data)
     g_print ("Clearing image buffer\n");
     record_on = FALSE;
     if (!write_on) {
-        g_queue_clear_full(frameQ[0], free);
-        g_queue_clear_full(frameQ[1], free);
-        g_print ("Frame data cleared\r\n");
+        //g_queue_clear_full(frameQ[0], free);
+        //g_queue_clear_full(frameQ[1], free);
+        //g_print ("Frame data cleared\r\n");
         FramesRecorded[0] = 0;
         FramesRecorded[1] = 0;
         // unblock record button
@@ -206,57 +235,21 @@ unsigned char *getPixel(unsigned char *pixdata, int j, int i, int w, int bps) {
 
 void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
     AcqCbArg_T *arg = pFrameData->pUserParam;
+    StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
 
-    if (!write_on) {
-        //printf("Callback: cam: %u Width: %d Height: %d FrameID: %lu>\n",
-        //                arg->camId, pFrameData->nWidth, pFrameData->nHeight, pFrameData->nFrameID);
+    PixelFormatConvert(arg->pState, pFrameData);
+    new_frame->id = pFrameData->nFrameID;
+    memcpy(new_frame->data, arg->pState->RBGimageBuf, FRAME_H*FRAME_W*3);
+    if (!write_on)
+        g_async_queue_push(DisplayQ[arg->camId], g_atomic_rc_box_acquire(new_frame));
 
-        //printf("Frame status=%d\r\n", pFrameData->status);
-        PixelFormatConvert(arg->pState, pFrameData);
-        unsigned char *pixdata = arg->pState->RBGimageBuf;
-        const int W = resolution_w * 3;
-        for (int j=0; j<resolution_h; j++) {
-            for (int i=0; i<resolution_w; i++)
-                memcpy(getPixel(frame_shadow[arg->camId], j, i, resolution_w, 3),
-                getPixel(pixdata, j*3, i*3, W, 3),
-                3);
-        }
+    if (record_on)
+        g_async_queue_push(RecordQ[arg->camId],   g_atomic_rc_box_acquire(new_frame));
 
-        for (int j=0; j<resolution_h; j++) {
-            for (int i=0; i<resolution_w; i++) {
-                unsigned char *pixel = getPixel(frame_shadow[arg->camId], j, i, resolution_w, 3);
-                unsigned char g = (255-pixel[0]);
-                pixel[0] = g; pixel[1] = g; pixel[2] = g;
-            }
-        }
-
-        //RGB24RedtoGrayscale8(frame_shadow[arg->camId], frame_shadow[arg->camId], resolution_h, resolution_w);
-        SWAP(frame_shadow[arg->camId], frame[arg->camId]);
-    }
-
-    if (record_on) {
-        //Grayscale version
-        //RGB24toGrayscale8(arg->pState->RBGimageBuf, arg->pState->MonoImageBuf, pFrameData->nHeight, pFrameData->nWidth);
-        unsigned char *frameData = malloc(pFrameData->nWidth * pFrameData->nHeight);
-        if (frameData == NULL) {
-            fprintf(stderr, "Memory allocation failed\r\n");
-            exit(1);
-        }
-        fprintf(stdout, "Cam-%d frame %d\r\n", arg->camId, FramesRecorded[arg->camId]);
-        RGB24RedtoGrayscale8(arg->pState->RBGimageBuf, frameData, pFrameData->nHeight, pFrameData->nWidth);
-        g_queue_push_tail(frameQ[arg->camId], (gpointer) frameData);
-        FramesRecorded[arg->camId] ++;
-        if (FramesRecorded[arg->camId] >= frames_record_max) {
-            record_on = FALSE;
-        }
-    }
+    g_atomic_rc_box_release(new_frame);
 }
 
 void* camera_task (void * param) {
-
-    for (int k=0; k<2; k++)
-        frameQ[k] = g_queue_new();
-
     uint32_t nDev = 0;
     GX_STATUS status = GXUpdateDeviceList(&nDev, 1000);
     printf("Devices found:%d\r\n", nDev);
@@ -352,38 +345,7 @@ void* camera_task (void * param) {
     camStatus[1] = GXSendCommand(cam[1], GX_COMMAND_ACQUISITION_START);
 
     while(TRUE) {
-        if (write_on) {
-            char dirname[64 + 1] = {0};
-            strftime(dirname, 32, "%Y-%m-%d.%H:%M:%S", &CurrentDateTime);
-            strncat(dirname + strlen(dirname), DirSuffix, sizeof(DirSuffix)-1);
-            g_mkdir(dirname, 0777);
-            FramesStored[0] = 0;
-            FramesStored[1] = 0;
-
-            // TODO: use glib functions
-            for (int k=0; k<2; k++) {
-
-                while (!g_queue_is_empty(frameQ[k])) {
-                    unsigned char *frameData = g_queue_pop_head(frameQ[k]);
-                    DynamicBuffer_T *io = savePngToMem(frameData, 1920, 1200);
-                    char filename[64 + 1] = {0};
-                    sprintf(filename, "%s/cam%d-%05d.png", dirname, k, FramesStored[k]);
-
-                    FILE *out = fopen(filename, "wb");
-                    fwrite(((DynamicBuffer_T *)io)->data, 1, ((DynamicBuffer_T *)io)->count, out);
-                    fflush(out);
-                    fclose(out);
-                    dynamicBufferDestroy(io);
-                    FramesStored[k]++;
-                    free(frameData);
-                }
-            }
-            FramesRecorded[0] = 0;
-            FramesRecorded[1] = 0;
-            write_on = FALSE;
-            WriteComplete = TRUE;
-        }
-        else if (settings_changed) {
+        if (settings_changed) {
             for (int k=0; k<2; k++) {
             //Set exposure
                 GXSetEnum(cam[k], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
@@ -401,6 +363,92 @@ void* camera_task (void * param) {
     }
 }
 
+void* display_q_task (void *param) {
+    int camId = *(int*)(param);
+    while (1) {
+        StoredFrame_T *next_frame = g_async_queue_pop(DisplayQ[camId]);
+
+        const int W = resolution_w * 3;
+        for (int j=0; j<resolution_h; j++) {
+            for (int i=0; i<resolution_w; i++)
+                memcpy(getPixel(frame_shadow[camId], j, i, resolution_w, 3),
+                                      getPixel(next_frame->data, j*3, i*3, W, 3),
+                                                                          3);
+        }
+
+        for (int j=0; j<resolution_h; j++) {
+            for (int i=0; i<resolution_w; i++) {
+                unsigned char *pixel = getPixel(frame_shadow[camId], j, i, resolution_w, 3);
+                unsigned char g = 255-pixel[1];
+                pixel[0] = g; pixel[1] = g; pixel[2] = g;
+             }
+        }
+
+        //printf("display_Q %d: release %d\n", camId, next_frame->id);
+        g_atomic_rc_box_release(next_frame);
+
+        SWAP(frame_shadow[camId], frame[camId]);
+    }
+}
+
+void* record_q_task (void *param) {
+    int camId = *(int*)(param);
+    while (1) {
+        StoredFrame_T *in_frame  = g_async_queue_pop(RecordQ[camId]);
+        StoredFrameMono_T *out_frame = g_atomic_rc_box_new(StoredFrameMono_T);
+
+        out_frame->id = in_frame->id;
+        fprintf(stdout, "Cam-%d frame %d actual id %lld\r\n", camId, FramesRecorded[camId], out_frame->id);
+
+        RGB24GreentoGrayscale8(in_frame->data, out_frame->data, FRAME_H, FRAME_W);
+        g_async_queue_push(frameQ[camId], (gpointer) out_frame);
+        FramesRecorded[camId] ++;
+        if (FramesRecorded[camId] >= frames_record_max) {
+            record_on = FALSE;
+        }
+
+        g_atomic_rc_box_release(in_frame);
+    }
+}
+
+void* store_q_task (void *param) {
+    int camId = *(int*)(param);
+    while (1) {
+
+        if (write_on) {
+
+            FramesStored[camId] = 0;
+
+            // TODO: use glib functions
+            int n_frames = g_async_queue_length(frameQ[camId]);
+
+            if (n_frames > 0) {
+                for (int frn = 0; frn < n_frames; frn++) {
+                    StoredFrameMono_T *next_frame = g_async_queue_pop(frameQ[camId]);
+                    uint8_t *frameData = next_frame->data;
+                    uint64_t frame_id = next_frame->id;
+                    DynamicBuffer_T *io = savePngToMem(frameData, FRAME_W, FRAME_H);
+                    char filename[64 + 8 + 1] = {0};
+                    sprintf(filename, "%s/cam%d-%05d-%08lld.png", dirname, camId, FramesStored[camId], frame_id);
+
+                    FILE *out = fopen(filename, "wb");
+                    fwrite(((DynamicBuffer_T *)io)->data, 1, ((DynamicBuffer_T *)io)->count, out);
+                    fflush(out);
+                    fclose(out);
+                    dynamicBufferDestroy(io);
+                    FramesStored[camId]++;
+
+                    g_atomic_rc_box_release(next_frame);
+                }
+            }
+            FramesRecorded[camId] = 0;
+            write_on = FALSE; // other store threads could not yet finished their work!!!
+            WriteComplete = TRUE; //
+        } else {
+            usleep(5000);
+        }
+    }
+}
 
 int main(int argc, char **argv) {
     frames_record_max = 3000;
@@ -452,6 +500,12 @@ int main(int argc, char **argv) {
     frame_shadow[0] = rgb_bitmap_allocate (resolution_w, resolution_h);
     frame_shadow[1] = rgb_bitmap_allocate (resolution_w, resolution_h);
 
+    for (int k=0; k<2; k++) {
+        frameQ[k]   = g_async_queue_new();
+        DisplayQ[k] = g_async_queue_new();
+        RecordQ[k]  = g_async_queue_new();
+    }
+
     gdk_threads_add_timeout(60, ui_update_task, &buttons);
     gtk_widget_show_all (GTK_WIDGET(window));
 
@@ -459,6 +513,36 @@ int main(int argc, char **argv) {
     pthread_attr_t attr;
     pthread_attr_init (&attr);
     pthread_create (&tid, &attr, camera_task, NULL);
+
+    pthread_t tid1;
+    pthread_attr_t attr1;
+    pthread_attr_init (&attr1);
+    pthread_create (&tid1, &attr1, display_q_task, &CamId0);
+
+    pthread_t tid2;
+    pthread_attr_t attr2;
+    pthread_attr_init (&attr2);
+    pthread_create (&tid2, &attr2, display_q_task, &CamId1);
+
+    pthread_t tid3;
+    pthread_attr_t attr3;
+    pthread_attr_init (&attr3);
+    pthread_create (&tid3, &attr3, record_q_task, &CamId0);
+
+    pthread_t tid4;
+    pthread_attr_t attr4;
+    pthread_attr_init (&attr4);
+    pthread_create (&tid4, &attr4, record_q_task, &CamId1);
+
+    pthread_t tid5;
+    pthread_attr_t attr5;
+    pthread_attr_init (&attr5);
+    pthread_create (&tid5, &attr5, store_q_task, &CamId0);
+
+    pthread_t tid6;
+    pthread_attr_t attr6;
+    pthread_attr_init (&attr6);
+    pthread_create (&tid6, &attr6, store_q_task, &CamId1);
 
     gtk_main ();
 
