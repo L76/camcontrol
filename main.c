@@ -97,6 +97,7 @@ const int resolution_w = FRAME_W/3, resolution_h = FRAME_H/3;
 gboolean record_on = FALSE, write_on = FALSE;
 gboolean WriteComplete = FALSE;
 gboolean settings_changed = FALSE;
+gboolean record_resume = FALSE;
 
 unsigned char *frame[2], *frame_shadow[2];
 int frames_record_max;
@@ -111,29 +112,35 @@ static void button_record (GtkWidget *widget, gpointer data)
   CurrentDateTime = currentDateTime();
   ButtonIface_T *buttons = (ButtonIface_T *) data;
   gtk_widget_set_sensitive(buttons->recordBtn, false);
+
+  if (!record_resume) {
+    strftime(dirname, 32, "%Y-%m-%d.%H:%M:%S", &CurrentDateTime);
+    strncat(dirname + strlen(dirname), DirSuffix, sizeof(DirSuffix)-1);
+    g_mkdir(dirname, 0777);
+    record_resume = TRUE;
+  }
+
   record_on = TRUE;
 }
 
 static void button_stop (GtkWidget *widget, gpointer data)
 {
-  g_print ("Stop recording\n");
+  g_print ("Pause recording\n");
   record_on = FALSE;
-  // block record button
+  // unblock record button
   ButtonIface_T *buttons = (ButtonIface_T *) data;
-  gtk_widget_set_sensitive(buttons->recordBtn, false);
+  gtk_widget_set_sensitive(buttons->recordBtn, true);
 }
 
 static void button_save (GtkWidget *widget, gpointer data)
 {
+/*
   g_print ("Saving images to disk\n");
   record_on = FALSE;
   write_on = TRUE;
   ButtonIface_T *buttons = (ButtonIface_T *) data;
   gtk_widget_set_sensitive(buttons->recordBtn, false);
-
-  strftime(dirname, 32, "%Y-%m-%d.%H:%M:%S", &CurrentDateTime);
-  strncat(dirname + strlen(dirname), DirSuffix, sizeof(DirSuffix)-1);
-  g_mkdir(dirname, 0777);
+*/
 }
 
 static void button_reset (GtkWidget *widget, gpointer data)
@@ -141,12 +148,15 @@ static void button_reset (GtkWidget *widget, gpointer data)
     ButtonIface_T *buttons = (ButtonIface_T *) data;
     g_print ("Clearing image buffer\n");
     record_on = FALSE;
+    record_resume = FALSE;
     if (!write_on) {
         //g_queue_clear_full(frameQ[0], free);
         //g_queue_clear_full(frameQ[1], free);
         //g_print ("Frame data cleared\r\n");
         FramesRecorded[0] = 0;
         FramesRecorded[1] = 0;
+        FramesStored[0] = 0;
+        FramesStored[1] = 0;
         // unblock record button
         gtk_widget_set_sensitive(buttons->recordBtn, true);
     }
@@ -185,17 +195,13 @@ void update_progress_bar()
 
     //gtk_progress_bar_set_show_text (GTK_PROGRESS_BAR(progress_bar), TRUE);
     if (record_on) {
-        snprintf(&text[0], smax, "Recording frames into memory: %d(%d)/%d", FramesRecorded[0], FramesRecorded[1], frames_record_max);
-        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), (double)FramesRecorded[0]/frames_record_max);
-    } else if (write_on) {
-        snprintf(&text[0], smax, "Writing images: %d(%d)/%d(%d)", FramesStored[0], FramesStored[1], FramesRecorded[0], FramesRecorded[1]);
-        double fraction = (double)(FramesStored[0]+FramesStored[1])/(FramesRecorded[0]+FramesRecorded[1]);
-        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), fraction);
-    } else
-        snprintf(&text[0], smax, "Frames recorded: %d(%d)/%d", FramesRecorded[0], FramesRecorded[1], frames_record_max);
-
+        snprintf(&text[0], smax, "Recording frames: %d(%d)/%d(%d)/%d", FramesStored[0], FramesStored[1], FramesRecorded[0], FramesRecorded[1], frames_record_max);
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), (double)(FramesRecorded[0]+FramesRecorded[1])/(frames_record_max*2));
+    } else {
+        snprintf(&text[0], smax, "Recording frames: %d(%d)/%d(%d)/%d", FramesStored[0], FramesStored[1], FramesRecorded[0], FramesRecorded[1], frames_record_max);
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), (double)(FramesRecorded[0]+FramesRecorded[1])/(frames_record_max*2));
+    }
     gtk_progress_bar_set_text (GTK_PROGRESS_BAR(progress_bar), text);
-
 }
 
 
@@ -358,6 +364,8 @@ void* camera_task (void * param) {
             settings_changed = FALSE;
         }
         else {
+            if (record_on && (FramesRecorded[0] + FramesRecorded[1] >= frames_record_max*2))
+                record_on = FALSE;
             usleep(500);
         }
     }
@@ -402,11 +410,6 @@ void* record_q_task (void *param) {
 
         RGB24GreentoGrayscale8(in_frame->data, out_frame->data, FRAME_H, FRAME_W);
         g_async_queue_push(frameQ[camId], (gpointer) out_frame);
-        FramesRecorded[camId] ++;
-        if (FramesRecorded[camId] >= frames_record_max) {
-            record_on = FALSE;
-        }
-
         g_atomic_rc_box_release(in_frame);
     }
 }
@@ -414,44 +417,28 @@ void* record_q_task (void *param) {
 void* store_q_task (void *param) {
     int camId = *(int*)(param);
     while (1) {
+        StoredFrameMono_T *next_frame = g_async_queue_pop(frameQ[camId]);
+        uint8_t *frameData = next_frame->data;
+        uint64_t frame_id = next_frame->id;
 
-        if (write_on) {
+        DynamicBuffer_T *io = savePngToMem(frameData, FRAME_W, FRAME_H);
+        char filename[64 + 9 + 1] = {0};
+        sprintf(filename, "%s/cam%d-%05d-%08lld.png", dirname, camId, FramesStored[camId], frame_id);
 
-            FramesStored[camId] = 0;
+        FILE *out = fopen(filename, "wb");
+        fwrite(((DynamicBuffer_T *)io)->data, 1, ((DynamicBuffer_T *)io)->count, out);
+        fflush(out);
+        fclose(out);
+        dynamicBufferDestroy(io);
 
-            // TODO: use glib functions
-            int n_frames = g_async_queue_length(frameQ[camId]);
-
-            if (n_frames > 0) {
-                for (int frn = 0; frn < n_frames; frn++) {
-                    StoredFrameMono_T *next_frame = g_async_queue_pop(frameQ[camId]);
-                    uint8_t *frameData = next_frame->data;
-                    uint64_t frame_id = next_frame->id;
-                    DynamicBuffer_T *io = savePngToMem(frameData, FRAME_W, FRAME_H);
-                    char filename[64 + 8 + 1] = {0};
-                    sprintf(filename, "%s/cam%d-%05d-%08lld.png", dirname, camId, FramesStored[camId], frame_id);
-
-                    FILE *out = fopen(filename, "wb");
-                    fwrite(((DynamicBuffer_T *)io)->data, 1, ((DynamicBuffer_T *)io)->count, out);
-                    fflush(out);
-                    fclose(out);
-                    dynamicBufferDestroy(io);
-                    FramesStored[camId]++;
-
-                    g_atomic_rc_box_release(next_frame);
-                }
-            }
-            FramesRecorded[camId] = 0;
-            write_on = FALSE; // other store threads could not yet finished their work!!!
-            WriteComplete = TRUE; //
-        } else {
-            usleep(5000);
-        }
+        FramesStored[camId]++;
+        FramesRecorded[camId] = g_async_queue_length(frameQ[camId]);
+        g_atomic_rc_box_release(next_frame);
     }
 }
 
 int main(int argc, char **argv) {
-    frames_record_max = 3000;
+    frames_record_max = 2500;
 
     GX_STATUS status = GXInitLib();
     if (status != GX_STATUS_SUCCESS) {
