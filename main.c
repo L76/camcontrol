@@ -33,12 +33,6 @@ typedef struct {
     GtkWidget *applyBtn;
 } ButtonIface_T;
 
-/*
-typedef struct {
-    uint8_t rgb[3];
-} RGB24Pixel_T;
-*/
-
 typedef struct {
     uint64_t id;
     uint8_t data[FRAME_W*FRAME_H*3];
@@ -120,13 +114,6 @@ static void button_stop (GtkWidget *widget, gpointer data)
 
 static void button_save (GtkWidget *widget, gpointer data)
 {
-/*
-  g_print ("Saving images to disk\n");
-  record_on = FALSE;
-  write_on = TRUE;
-  ButtonIface_T *buttons = (ButtonIface_T *) data;
-  gtk_widget_set_sensitive(buttons->recordBtn, false);
-*/
 }
 
 static void button_reset (GtkWidget *widget, gpointer data)
@@ -136,9 +123,6 @@ static void button_reset (GtkWidget *widget, gpointer data)
     record_on = FALSE;
     record_resume = FALSE;
     if (!write_on) {
-        //g_queue_clear_full(frameQ[0], free);
-        //g_queue_clear_full(frameQ[1], free);
-        //g_print ("Frame data cleared\r\n");
         FramesRecorded[0] = 0;
         FramesRecorded[1] = 0;
         FramesStored[0] = 0;
@@ -265,10 +249,6 @@ void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
         g_async_queue_push(RecordQ[arg->camId],   g_atomic_rc_box_acquire(new_frame));
 
     g_atomic_rc_box_release(new_frame);
-
-    //For single frame asq. test
-    //GX_STATUS camStatus = GXSendCommand(CamHandle[arg->camId], GX_COMMAND_ACQUISITION_START);
-    //check_cam_status_and_exit(__LINE__, arg->camId, camStatus);
 }
 
 void init_devices() {
@@ -364,8 +344,6 @@ void* camera_task (void *param) {
 
     // Trigger configuration start
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_CONTROL_MODE, GX_ENUM_TRANSFER_CONTROL_MODE_USERCONTROLED);
-    // or GX_ENUM_TRANSFER_CONTROL_MODE_BASIC
-    //camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_CONTROL_MODE, GX_ENUM_TRANSFER_CONTROL_MODE_BASIC);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
     //Sets the transfer operation mode to the specified transfer frame mode.
@@ -388,14 +366,10 @@ void* camera_task (void *param) {
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
-    //camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_SINGLE_FRAME);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
     camStatus = GXSendCommand(CamHandle[camId], GX_COMMAND_ACQUISITION_START);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    // The thread must not die!
-    // while(1) { usleep(1); }
 }
 
 void* display_q_task (void *param) {
@@ -419,7 +393,6 @@ void* display_q_task (void *param) {
              }
         }
 
-        //printf("display_Q %d: release %d\n", camId, next_frame->id);
         g_atomic_rc_box_release(next_frame);
 
         SWAP(frame_shadow[camId], frame[camId]);
@@ -556,18 +529,6 @@ int main(int argc, char **argv) {
     //Pre-init cameras
     init_devices();
 
-    // Run acquisition threads
-/*
-    pthread_t tid00;
-    pthread_attr_t attr00;
-    pthread_attr_init (&attr00);
-    pthread_create (&tid00, &attr00, camera_task, &CamId0);
-
-    pthread_t tid01;
-    pthread_attr_t attr01;
-    pthread_attr_init (&attr01);
-    pthread_create (&tid01, &attr01, camera_task, &CamId1);
-*/
     // Start acquisition
     camera_task(&CamId0);
     camera_task(&CamId1);
