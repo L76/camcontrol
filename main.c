@@ -61,7 +61,7 @@ static GAsyncQueue *frameQ[2];
 static const int CamId0 = 0;
 static const int CamId1 = 1;
 static GX_DEV_HANDLE CamHandle[2];
-//static AcqCbArg_T AcqHandle[2];
+static AcqCbArg_T AcqHandle[2];
 
 struct tm currentDateTime() {
     time_t     now = time(0);
@@ -313,7 +313,8 @@ void init_devices() {
 
 void* camera_task (void *param) {
     int camId = *(int*)(param);
-    AcqCbArg_T acqHandle = {.camId = camId, .device=CamHandle[camId]};
+    AcqHandle[camId].camId = camId;
+    AcqHandle[camId].device=CamHandle[camId];
     GX_STATUS  camStatus = GX_STATUS_SUCCESS;
     int64_t  colorFilter = GX_COLOR_FILTER_NONE;
     int64_t  payloadSize = 0;
@@ -326,7 +327,7 @@ void* camera_task (void *param) {
 
     printf("CAM%d Color Filter=%ld, Payload Size=%ld\r\n", camId, colorFilter, payloadSize);
 
-    acqHandle.pState = PixelProcInit(payloadSize, colorFilter);
+    AcqHandle[camId].pState = PixelProcInit(payloadSize, colorFilter);
     //Set exposure
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
@@ -383,7 +384,7 @@ void* camera_task (void *param) {
     // End of trigger configuration
 
     //Register Callback
-    camStatus = GXRegisterCaptureCallback(CamHandle[camId], &acqHandle, OnFrameCallbackFun);
+    camStatus = GXRegisterCaptureCallback(CamHandle[camId], &AcqHandle[camId], OnFrameCallbackFun);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
@@ -394,7 +395,7 @@ void* camera_task (void *param) {
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
     // The thread must not die!
-    while(1) { usleep(1); }
+    // while(1) { usleep(1); }
 }
 
 void* display_q_task (void *param) {
@@ -556,6 +557,7 @@ int main(int argc, char **argv) {
     init_devices();
 
     // Run acquisition threads
+/*
     pthread_t tid00;
     pthread_attr_t attr00;
     pthread_attr_init (&attr00);
@@ -565,6 +567,11 @@ int main(int argc, char **argv) {
     pthread_attr_t attr01;
     pthread_attr_init (&attr01);
     pthread_create (&tid01, &attr01, camera_task, &CamId1);
+*/
+    // Start acquisition
+    camera_task(&CamId0);
+    camera_task(&CamId1);
+
     gtk_main();
 
     return 0;
