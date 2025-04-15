@@ -60,27 +60,13 @@ static GAsyncQueue *frameQ[2];
 
 static const int CamId0 = 0;
 static const int CamId1 = 1;
+static GX_DEV_HANDLE CamHandle[2];
+//static AcqCbArg_T AcqHandle[2];
 
 struct tm currentDateTime() {
     time_t     now = time(0);
     struct tm  tstruct = *localtime(&now);
     return tstruct;
-}
-
-GX_STATUS setTrigger(GX_DEV_HANDLE cam) {
-    GX_STATUS emStatus;
-    emStatus = GXSetEnum(cam, GX_ENUM_TRANSFER_CONTROL_MODE,
-    GX_ENUM_TRANSFER_CONTROL_MODE_USERCONTROLED);
-    //Sets the transfer operation mode to the specified transfer frame mode.
-    emStatus = GXSetEnum(cam, GX_ENUM_TRANSFER_OPERATION_MODE, GX_ENUM_TRANSFER_OPERATION_MODE_MULTIBLOCK);
-    //Sets the number of output frames per command.
-    emStatus = GXSetInt(cam, GX_INT_TRANSFER_BLOCK_COUNT, 1);
-
-    emStatus = GXSetEnum(cam, GX_ENUM_TRIGGER_SELECTOR, GX_ENUM_TRIGGER_SELECTOR_FRAME_START);
-
-    emStatus = GXSetEnum(cam, GX_ENUM_TRIGGER_SOURCE, GX_TRIGGER_SOURCE_LINE0);
-
-    return emStatus;
 }
 
 void rgb_bitmap_free (unsigned char *bitmap)
@@ -232,11 +218,37 @@ gboolean ui_update_task (gpointer user_data)
         WriteComplete = FALSE;
     }
 
+    if (settings_changed) {
+        for (int k=0; k<2; k++) {
+            //Re- Set exposure
+            GXSetEnum(CamHandle[k], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
+            // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
+            GXSetFloat(CamHandle[k], GX_FLOAT_EXPOSURE_TIME, Exposition); //20ms
+            //Re- Set gain
+            GXSetEnum(CamHandle[k], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
+                GXSetFloat(CamHandle[k], GX_FLOAT_GAIN, Gain);
+        }
+        settings_changed = FALSE;
+    } else {
+        if (record_on && (FramesRecorded[0] + FramesRecorded[1] >= frames_record_max*2))
+            record_on = FALSE;
+    }
+
     return TRUE;
 }
 
 unsigned char *getPixel(unsigned char *pixdata, int j, int i, int w, int bps) {
     return &pixdata[(j*w + i)*bps];
+}
+
+void check_cam_status_and_exit(int line, int camId, GX_STATUS  camStatus) {
+    if (camStatus != GX_STATUS_SUCCESS) {
+         printf("%d: camera task: CAM%d init error: %d\r\n", line, camId, camStatus);
+         if (camStatus != GX_STATUS_NOT_IMPLEMENTED)
+            pthread_exit(NULL);
+    } else {
+        printf("%d: camera task: CAM%d OK\r\n", line, camId);
+    }
 }
 
 void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
@@ -253,122 +265,136 @@ void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
         g_async_queue_push(RecordQ[arg->camId],   g_atomic_rc_box_acquire(new_frame));
 
     g_atomic_rc_box_release(new_frame);
+
+    //For single frame asq. test
+    //GX_STATUS camStatus = GXSendCommand(CamHandle[arg->camId], GX_COMMAND_ACQUISITION_START);
+    //check_cam_status_and_exit(__LINE__, arg->camId, camStatus);
 }
 
-void* camera_task (void * param) {
+void init_devices() {
     uint32_t nDev = 0;
     GX_STATUS status = GXUpdateDeviceList(&nDev, 1000);
     printf("Devices found:%d\r\n", nDev);
 
-    GX_DEV_HANDLE cam[2] = {NULL};
     GX_STATUS camStatus[2] = {GX_STATUS_SUCCESS};
 
-    camStatus[0] = GXOpenDeviceByIndex(1, &cam[0]);
-    camStatus[1] = GXOpenDeviceByIndex(2, &cam[1]);
+    for (int i = 0; i < 2; i++)
+        camStatus[i] = GXOpenDeviceByIndex(i+1, &CamHandle[i]);
+
     printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
 
     size_t nSize[2] = { 0, 0 };
-    camStatus[0] = GXGetStringMaxLength(cam[0], GX_STRING_DEVICE_SERIAL_NUMBER, &nSize[0]);
-    camStatus[1] = GXGetStringMaxLength(cam[1], GX_STRING_DEVICE_SERIAL_NUMBER, &nSize[1]);
+    for (int i = 0; i < 2; i++)
+        camStatus[i] = GXGetStringMaxLength(CamHandle[i], GX_STRING_DEVICE_SERIAL_NUMBER, &nSize[i]);
+
     printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
 
     char *idText[2];
-    idText[0] = malloc(nSize[0]);
-    idText[1] = malloc(nSize[1]);
+    for (int i = 0; i < 2; i++)
+        idText[i] = malloc(nSize[i]);
 
-    camStatus[0] = GXGetString(cam[0], GX_STRING_DEVICE_SERIAL_NUMBER, idText[0], &nSize[0]);
-    camStatus[1] = GXGetString(cam[1], GX_STRING_DEVICE_SERIAL_NUMBER, idText[1], &nSize[1]);
+    for (int i = 0; i < 2; i++)
+        camStatus[i] = GXGetString(CamHandle[i], GX_STRING_DEVICE_SERIAL_NUMBER, idText[i], &nSize[i]);
+
     printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
-
     printf("CAM0-id: %s; CAM1-id: %s\r\n", idText[0], idText[1]);
 
     static const char cam0_id[] = "FDE24060215";
     if (strncmp(idText[0], cam0_id, MIN(sizeof(cam0_id), nSize[0]))) {
         printf("SWAPING CAMERAS!\r\n");
-        SWAP(cam[0], cam[1]);
+        SWAP(CamHandle[0], CamHandle[1]);
     }
 
-    AcqCbArg_T AcqHandle[2] = {
-        {.camId = 0, .device=cam[0]},
-        {.camId = 1, .device=cam[1]},
-    };
+    for (int i = 0; i < 2; i++)
+        free(idText[i]);
+}
 
-    int64_t colorFilter[2] = {GX_COLOR_FILTER_NONE};
-    int64_t payloadSize[2]  = {0};
-    for (int i=0; i<2; i++) {
-        camStatus[i] = GXGetEnum(cam[i], GX_ENUM_PIXEL_COLOR_FILTER, &colorFilter[i]);
-        camStatus[i] = GXGetInt(cam[i], GX_INT_PAYLOAD_SIZE, &payloadSize[i]);
-        printf("CAM%d Color Filter=%ld, Payload Size=%ld\r\n", i, colorFilter[i], payloadSize[i]);
-        AcqHandle[i].pState = PixelProcInit(payloadSize[i], colorFilter[i]);
 
-        //Set exposure
-        camStatus[i] = GXSetEnum(cam[i], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
-        // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
-        camStatus[i] = GXSetFloat(cam[i], GX_FLOAT_EXPOSURE_TIME, Exposition); //20ms
 
-        //Set gain
-        camStatus[i] = GXSetEnum(cam[i], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
-        camStatus[i] = GXSetFloat(cam[i], GX_FLOAT_GAIN, Gain);
+void* camera_task (void *param) {
+    int camId = *(int*)(param);
+    AcqCbArg_T acqHandle = {.camId = camId, .device=CamHandle[camId]};
+    GX_STATUS  camStatus = GX_STATUS_SUCCESS;
+    int64_t  colorFilter = GX_COLOR_FILTER_NONE;
+    int64_t  payloadSize = 0;
+
+    camStatus = GXGetEnum(CamHandle[camId], GX_ENUM_PIXEL_COLOR_FILTER, &colorFilter);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXGetInt(CamHandle[camId], GX_INT_PAYLOAD_SIZE, &payloadSize);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    printf("CAM%d Color Filter=%ld, Payload Size=%ld\r\n", camId, colorFilter, payloadSize);
+
+    acqHandle.pState = PixelProcInit(payloadSize, colorFilter);
+    //Set exposure
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
+    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_EXPOSURE_TIME, Exposition);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    //Set gain
+    camStatus =  GXSetEnum(CamHandle[camId], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_GAIN, Gain);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    printf("CAM %d opened\r\n", camId);
+
+    if (camId == 0) {
+        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, FALSE);
+        check_cam_status_and_exit(__LINE__, camId, camStatus);
+        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, FALSE);
+        check_cam_status_and_exit(__LINE__, camId, camStatus);
     }
 
-    if (camStatus[0] != GX_STATUS_SUCCESS ||
-        camStatus[1] != GX_STATUS_SUCCESS)  {
-        pthread_exit(NULL);
+    if (camId == 1) {
+        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, TRUE);
+        check_cam_status_and_exit(__LINE__, camId, camStatus);
+        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, TRUE);
+        check_cam_status_and_exit(__LINE__, camId, camStatus);
     }
 
-    printf("Opened both\r\n");
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_MODE, GX_TRIGGER_MODE_ON);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = GXSetBool(cam[0], GX_BOOL_REVERSE_X, FALSE);
-    camStatus[1] = GXSetBool(cam[1], GX_BOOL_REVERSE_X, TRUE);
-    printf("%d REVERCE_X: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_ACTIVATION, GX_TRIGGER_ACTIVATION_RISINGEDGE);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = GXSetBool(cam[0], GX_BOOL_REVERSE_Y, FALSE);
-    camStatus[0] = GXSetBool(cam[1], GX_BOOL_REVERSE_Y, TRUE);
-    printf("%d REVERSE_Y: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
+    // Trigger configuration start
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_CONTROL_MODE, GX_ENUM_TRANSFER_CONTROL_MODE_USERCONTROLED);
+    // or GX_ENUM_TRANSFER_CONTROL_MODE_BASIC
+    //camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_CONTROL_MODE, GX_ENUM_TRANSFER_CONTROL_MODE_BASIC);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = GXSetEnum(cam[0], GX_ENUM_TRIGGER_MODE, GX_TRIGGER_MODE_ON);
-    camStatus[1] = GXSetEnum(cam[1], GX_ENUM_TRIGGER_MODE, GX_TRIGGER_MODE_ON);
-    printf("%d: Trigger Mode ON: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
+    //Sets the transfer operation mode to the specified transfer frame mode.
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_OPERATION_MODE, GX_ENUM_TRANSFER_OPERATION_MODE_MULTIBLOCK);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = GXSetEnum(cam[0], GX_ENUM_TRIGGER_ACTIVATION,
-        GX_TRIGGER_ACTIVATION_RISINGEDGE);
-    camStatus[1] = GXSetEnum(cam[1], GX_ENUM_TRIGGER_ACTIVATION,
-        GX_TRIGGER_ACTIVATION_RISINGEDGE);
+    //Sets the number of output frames per command.
+    camStatus = GXSetInt(CamHandle[camId], GX_INT_TRANSFER_BLOCK_COUNT, 1);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = GXRegisterCaptureCallback(cam[0], &AcqHandle[0], OnFrameCallbackFun);
-    camStatus[1] = GXRegisterCaptureCallback(cam[1], &AcqHandle[1], OnFrameCallbackFun);
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_SELECTOR, GX_ENUM_TRIGGER_SELECTOR_FRAME_START);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = setTrigger(cam[0]);
-    camStatus[1] = setTrigger(cam[1]);
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_SOURCE, GX_TRIGGER_SOURCE_LINE0);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    // End of trigger configuration
 
-   // camStatus[0] = GXSetEnum(cam[0], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_SINGLE_FRAME);
-    //camStatus[1] = GXSetEnum(cam[1], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_SINGLE_FRAME);
+    //Register Callback
+    camStatus = GXRegisterCaptureCallback(CamHandle[camId], &acqHandle, OnFrameCallbackFun);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = GXSetEnum(cam[0], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
-    camStatus[1] = GXSetEnum(cam[1], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
+    //camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_SINGLE_FRAME);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    camStatus[0] = GXSendCommand(cam[0], GX_COMMAND_ACQUISITION_START);
-    camStatus[1] = GXSendCommand(cam[1], GX_COMMAND_ACQUISITION_START);
+    camStatus = GXSendCommand(CamHandle[camId], GX_COMMAND_ACQUISITION_START);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-    while(TRUE) {
-        if (settings_changed) {
-            for (int k=0; k<2; k++) {
-            //Set exposure
-                GXSetEnum(cam[k], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
-                // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
-                GXSetFloat(cam[k], GX_FLOAT_EXPOSURE_TIME, Exposition); //20ms
-                //Set gain
-                GXSetEnum(cam[k], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
-                GXSetFloat(cam[k], GX_FLOAT_GAIN, Gain);
-            }
-            settings_changed = FALSE;
-        }
-        else {
-            if (record_on && (FramesRecorded[0] + FramesRecorded[1] >= frames_record_max*2))
-                record_on = FALSE;
-            usleep(500);
-        }
-    }
+    // The thread must not die!
+    while(1) { usleep(1); }
 }
 
 void* display_q_task (void *param) {
@@ -496,11 +522,6 @@ int main(int argc, char **argv) {
     gdk_threads_add_timeout(60, ui_update_task, &buttons);
     gtk_widget_show_all (GTK_WIDGET(window));
 
-    pthread_t tid;
-    pthread_attr_t attr;
-    pthread_attr_init (&attr);
-    pthread_create (&tid, &attr, camera_task, NULL);
-
     pthread_t tid1;
     pthread_attr_t attr1;
     pthread_attr_init (&attr1);
@@ -531,7 +552,20 @@ int main(int argc, char **argv) {
     pthread_attr_init (&attr6);
     pthread_create (&tid6, &attr6, store_q_task, &CamId1);
 
-    gtk_main ();
+    //Pre-init cameras
+    init_devices();
+
+    // Run acquisition threads
+    pthread_t tid00;
+    pthread_attr_t attr00;
+    pthread_attr_init (&attr00);
+    pthread_create (&tid00, &attr00, camera_task, &CamId0);
+
+    pthread_t tid01;
+    pthread_attr_t attr01;
+    pthread_attr_init (&attr01);
+    pthread_create (&tid01, &attr01, camera_task, &CamId1);
+    gtk_main();
 
     return 0;
 }
