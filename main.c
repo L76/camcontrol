@@ -43,6 +43,11 @@ typedef struct {
     uint8_t data[FRAME_W*FRAME_H];
 } StoredFrameMono_T;
 
+typedef struct {
+    uint64_t frameId;
+    int camId;
+} FakeFrameState_T;
+
 static int FramesRecorded[2] = {0, 0};
 static int FramesStored[2] = {0, 0};
 static struct tm CurrentDateTime = {0};
@@ -235,6 +240,14 @@ void check_cam_status_and_exit(int line, int camId, GX_STATUS  camStatus) {
     }
 }
 
+void new_frame_push(const int camId, StoredFrame_T *new_frame) {
+    if (!write_on)
+        g_async_queue_push(DisplayQ[camId], g_atomic_rc_box_acquire(new_frame));
+
+    if (record_on)
+        g_async_queue_push(RecordQ[camId],  g_atomic_rc_box_acquire(new_frame));
+}
+
 void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
     AcqCbArg_T *arg = pFrameData->pUserParam;
     StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
@@ -242,19 +255,53 @@ void OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData) {
     PixelFormatConvert(arg->pState, pFrameData);
     new_frame->id = pFrameData->nFrameID;
     memcpy(new_frame->data, arg->pState->RBGimageBuf, FRAME_H*FRAME_W*3);
-    if (!write_on)
-        g_async_queue_push(DisplayQ[arg->camId], g_atomic_rc_box_acquire(new_frame));
-
-    if (record_on)
-        g_async_queue_push(RecordQ[arg->camId],   g_atomic_rc_box_acquire(new_frame));
-
+    new_frame_push(arg->camId, new_frame);
     g_atomic_rc_box_release(new_frame);
 }
 
-void init_devices() {
+void* FakeFrameTask(void *param) {
+    FakeFrameState_T *state = param;
+
+    const int brd = 100;
+    const int sx = 200, sy = 200;
+    int x = brd + rand()%(FRAME_W-2*brd-sx),
+        y = brd + rand()%(FRAME_H-2*brd-sy);
+    int xinc = 2, yinc = 2;
+
+
+    while (1) {
+        StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
+        bzero(new_frame->data, FRAME_H*FRAME_W*3);
+        new_frame->id = state->frameId;
+        state->frameId += 1;
+
+        for (int j = y; j < y + sy; j++) {
+            for (int i = x; i < x + sx; i++) {
+                unsigned char *pixel = getPixel(new_frame->data, j, i, FRAME_W, 3);
+                pixel[0] = rand() % 256;
+                pixel[1] = rand() % 256;
+                pixel[3] = rand() % 256;
+            }
+        }
+
+        x += xinc; if (x + sx + brd >= FRAME_W || (x < brd)) xinc = -xinc;
+        y += yinc; if (y + sy + brd >= FRAME_H || (y < brd)) yinc = -yinc;
+
+        new_frame_push(state->camId, new_frame);
+        g_atomic_rc_box_release(new_frame);
+
+        usleep(40000);
+    }
+}
+
+int init_devices() {
     uint32_t nDev = 0;
     GX_STATUS status = GXUpdateDeviceList(&nDev, 1000);
     printf("Devices found:%d\r\n", nDev);
+
+    if (nDev < 2) {
+        return -1;
+    }
 
     GX_STATUS camStatus[2] = {GX_STATUS_SUCCESS};
 
@@ -287,6 +334,8 @@ void init_devices() {
 
     for (int i = 0; i < 2; i++)
         free(idText[i]);
+
+    return 0;
 }
 
 
@@ -526,12 +575,26 @@ int main(int argc, char **argv) {
     pthread_attr_init (&attr6);
     pthread_create (&tid6, &attr6, store_q_task, &CamId1);
 
-    //Pre-init cameras
-    init_devices();
+    FakeFrameState_T fakeFrameState[2];
 
-    // Start acquisition
-    camera_task(&CamId0);
-    camera_task(&CamId1);
+    if (!init_devices()) {
+        camera_task(&CamId0);
+        camera_task(&CamId1);
+    } else {
+        fakeFrameState[0].camId = 0;
+        fakeFrameState[0].frameId = 0;
+        pthread_t tid7;
+        pthread_attr_t attr7;
+        pthread_attr_init (&attr7);
+        pthread_create(&tid7, &attr7, FakeFrameTask, &fakeFrameState[0]);
+
+        fakeFrameState[1].camId = 1;
+        fakeFrameState[1].frameId = 0;
+        pthread_t tid8;
+        pthread_attr_t attr8;
+        pthread_attr_init (&attr8);
+        pthread_create(&tid8, &attr8, FakeFrameTask, &fakeFrameState[1]);
+    }
 
     gtk_main();
 
