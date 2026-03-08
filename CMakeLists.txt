@@ -15,7 +15,8 @@ add_definitions(${GTK3_CFLAGS_OTHER})
 set(SOURCE_FILES 
     "main.c"
     "pixel.c"
-    "utils.c")
+    "utils.c"
+    "saveimage.c")
 
 include_directories(${PROJECT_NAME} ${GXIAPI_INCLUDE_PATH} ${PNG_INCLUDE_DIR} ${GTK3_INCLUDE_DIRS})
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})

@@ -9,7 +9,7 @@
     <property name="default-width">800</property>
     <property name="default-height">900</property>
     <child>
-      <!-- n-columns=10 n-rows=11 -->
+      <!-- n-columns=10 n-rows=22 -->
       <object class="GtkGrid">
         <property name="visible">True</property>
         <property name="can-focus">False</property>
@@ -24,7 +24,7 @@
           </object>
           <packing>
             <property name="left-attach">8</property>
-            <property name="top-attach">9</property>
+            <property name="top-attach">20</property>
           </packing>
         </child>
         <child>
@@ -36,19 +36,7 @@
           </object>
           <packing>
             <property name="left-attach">9</property>
-            <property name="top-attach">9</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkButton" id="button-save">
-            <property name="label" translatable="yes">Save</property>
-            <property name="visible">True</property>
-            <property name="can-focus">True</property>
-            <property name="receives-default">True</property>
-          </object>
-          <packing>
-            <property name="left-attach">8</property>
-            <property name="top-attach">10</property>
+            <property name="top-attach">20</property>
           </packing>
         </child>
         <child>
@@ -60,7 +48,7 @@
           </object>
           <packing>
             <property name="left-attach">9</property>
-            <property name="top-attach">10</property>
+            <property name="top-attach">21</property>
           </packing>
         </child>
         <child>
@@ -96,55 +84,7 @@
             <property name="left-attach">0</property>
             <property name="top-attach">0</property>
             <property name="width">8</property>
-            <property name="height">5</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkFrame">
-            <property name="visible">True</property>
-            <property name="can-focus">False</property>
-            <property name="label-xalign">0</property>
-            <property name="shadow-type">none</property>
-            <child>
-              <object class="GtkAlignment">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="left-padding">12</property>
-                <child>
-                  <object class="GtkImage" id="image-1">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="stock">gtk-dialog-error</property>
-                  </object>
-                </child>
-              </object>
-            </child>
-            <child type="label">
-              <object class="GtkLabel">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="label" translatable="yes">Camera1</property>
-              </object>
-            </child>
-          </object>
-          <packing>
-            <property name="left-attach">0</property>
-            <property name="top-attach">5</property>
-            <property name="width">8</property>
-            <property name="height">5</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkProgressBar" id="progress-bar">
-            <property name="visible">True</property>
-            <property name="can-focus">False</property>
-            <property name="pulse-step">0.01</property>
-            <property name="show-text">True</property>
-          </object>
-          <packing>
-            <property name="left-attach">0</property>
-            <property name="top-attach">10</property>
-            <property name="width">8</property>
+            <property name="height">10</property>
           </packing>
         </child>
         <child>
@@ -226,8 +166,148 @@
           </object>
           <packing>
             <property name="left-attach">9</property>
+            <property name="top-attach">18</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkFrame">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label-xalign">0</property>
+            <property name="shadow-type">none</property>
+            <child>
+              <object class="GtkAlignment">
+                <property name="visible">True</property>
+                <property name="can-focus">False</property>
+                <property name="left-padding">12</property>
+                <child>
+                  <object class="GtkImage" id="image-1">
+                    <property name="visible">True</property>
+                    <property name="can-focus">False</property>
+                    <property name="stock">gtk-dialog-error</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child type="label">
+              <object class="GtkLabel">
+                <property name="visible">True</property>
+                <property name="can-focus">False</property>
+                <property name="label" translatable="yes">Camera1</property>
+              </object>
+            </child>
+          </object>
+          <packing>
+            <property name="left-attach">0</property>
+            <property name="top-attach">10</property>
+            <property name="width">8</property>
+            <property name="height">10</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkProgressBar" id="progress-bar">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="pulse-step">0.01</property>
+            <property name="show-text">True</property>
+          </object>
+          <packing>
+            <property name="left-attach">0</property>
+            <property name="top-attach">20</property>
+            <property name="width">8</property>
+            <property name="height">2</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkLabel">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes">Mode:</property>
+          </object>
+          <packing>
+            <property name="left-attach">8</property>
             <property name="top-attach">7</property>
           </packing>
+        </child>
+        <child>
+          <object class="GtkComboBoxText" id="combo-box-color-mode">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="active">0</property>
+            <items>
+              <item id="0" translatable="yes">gray</item>
+              <item id="1" translatable="yes">red</item>
+              <item id="2" translatable="yes">green</item>
+              <item id="3" translatable="yes">blue</item>
+            </items>
+          </object>
+          <packing>
+            <property name="left-attach">9</property>
+            <property name="top-attach">7</property>
+          </packing>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
+        </child>
+        <child>
+          <placeholder/>
         </child>
         <child>
           <placeholder/>

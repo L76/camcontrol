@@ -3,38 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-DynamicBuffer_T *dynamicBufferCreate(size_t initialSize) {
-    DynamicBuffer_T *buf = malloc(sizeof(DynamicBuffer_T));
-    buf->data = calloc(initialSize, 1);
-    buf->alloc_size = initialSize;
-    buf->count = 0;
-    return buf;
-}
-
-int dynamicBufferPush(DynamicBuffer_T * buf, uint8_t *data, size_t len) {
-    if (buf->count + len > buf->alloc_size) {
-        //need realloc
-        size_t newSize = MAX(2*buf->alloc_size, buf->count + len);
-        buf->data = realloc(buf->data, newSize);
-        buf->alloc_size = newSize;
-        printf("newSize = %d\r\n", newSize);
-    }
-    memcpy(buf->data + buf->count, data, len);
-    buf->count += len;
-    return 0;
-}
-
-void dynamicBufferReset(DynamicBuffer_T * buf) {
-    //memset(buf->data, 0, buf->count);
-    buf->count = 0;
-}
-
-void dynamicBufferDestroy(DynamicBuffer_T * buf) {
-    free(buf->data);
-    free(buf);
-}
-
-uint8_t *makeGradientRGBA(const int w, const int h) {
+uint8_t*
+makeGradientRGBA(const int w, const int h)
+{
     unsigned char *RGBData = malloc(4 * w * h);
     for (int i=0; i<h; i++) {
         for (int j=0; j<w; j++) {
@@ -81,11 +52,65 @@ uint8_t *makeNoiseRGB(const int w, const int h) {
     const size_t pixelSize = 3;
     for (int i=0; i<h; i++) {
         for (int j=0; j<w; j++) {
-            float grad = (float) (i+j)/(w + h);
             RGBData[(i*w + j) * pixelSize]     = rand()%255;
             RGBData[(i*w + j) * pixelSize + 1] = rand()%255;
             RGBData[(i*w + j) * pixelSize + 2] = rand()%255;
         }
     }
     return RGBData;
+}
+
+void RGB24toGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w) {
+    int bytesPerPixel = 3;
+    for (int i=0; i<h; i++) {
+        for (int j=0; j<w; j++) {
+            int _gray = inputFrame[ (i *w + j)*bytesPerPixel] * 21268 + inputFrame[ (i *w + j)*bytesPerPixel + 1] * 71510
+            + inputFrame[ (i *w + j)*bytesPerPixel + 2] * 7217;
+            outputFrame[i *w + j] = _gray/100000;
+        }
+    }
+}
+
+void RGB24RedtoGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w) {
+    int bytesPerPixel = 3;
+    for (int i=0; i<h; i++) {
+        for (int j=0; j<w; j++) {
+            uint8_t _gray = 255-inputFrame[ (i *w + j)*bytesPerPixel];
+            outputFrame[i *w + j] = _gray;
+        }
+    }
+}
+
+void RGB24GreentoGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w) {
+    int bytesPerPixel = 3;
+    for (int i=0; i<h; i++) {
+        for (int j=0; j<w; j++) {
+            uint8_t _gray = 255-inputFrame[ (i *w + j)*bytesPerPixel+1];
+            outputFrame[i *w + j] = _gray;
+        }
+    }
+}
+
+void RGB24BluetoGrayscale8(uint8_t *inputFrame, uint8_t *outputFrame, int h, int w) {
+    int bytesPerPixel = 3;
+    for (int i=0; i<h; i++) {
+        for (int j=0; j<w; j++) {
+            uint8_t _gray = 255-inputFrame[ (i *w + j)*bytesPerPixel+2];
+            outputFrame[i *w + j] = _gray;
+        }
+    }
+}
+
+
+
+
+void rgb_bitmap_make_sample (unsigned char *bitmap, int width, int height)
+{
+    for (int j = 0; j < height; j++)
+        for (int i = 0; i < width; i++)
+        {
+            unsigned char s = random() % 255;
+            for (int k = 1; k <= 3; k++)
+                bitmap[3*(j*width + i) + k] = s;
+        }
 }
