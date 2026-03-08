@@ -166,7 +166,7 @@
           </object>
           <packing>
             <property name="left-attach">9</property>
-            <property name="top-attach">18</property>
+            <property name="top-attach">12</property>
           </packing>
         </child>
         <child>
@@ -247,28 +247,100 @@
           </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkLabel">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes">FrameW:</property>
+          </object>
+          <packing>
+            <property name="left-attach">8</property>
+            <property name="top-attach">8</property>
+          </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkLabel">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes">FrameH:</property>
+          </object>
+          <packing>
+            <property name="left-attach">8</property>
+            <property name="top-attach">9</property>
+          </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkLabel">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes">OffsetX:</property>
+          </object>
+          <packing>
+            <property name="left-attach">8</property>
+            <property name="top-attach">10</property>
+          </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkLabel">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes">OffsetY:</property>
+          </object>
+          <packing>
+            <property name="left-attach">8</property>
+            <property name="top-attach">11</property>
+          </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkEntry" id="frame-w-entry">
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="max-length">4</property>
+            <property name="text" translatable="yes">1920</property>
+            <property name="input-purpose">number</property>
+          </object>
+          <packing>
+            <property name="left-attach">9</property>
+            <property name="top-attach">8</property>
+          </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkEntry" id="frame-h-entry">
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="max-length">4</property>
+            <property name="text" translatable="yes">1200</property>
+            <property name="input-purpose">number</property>
+          </object>
+          <packing>
+            <property name="left-attach">9</property>
+            <property name="top-attach">9</property>
+          </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkEntry" id="offset-x-entry">
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="max-length">4</property>
+            <property name="text" translatable="yes">0</property>
+            <property name="input-purpose">number</property>
+          </object>
+          <packing>
+            <property name="left-attach">9</property>
+            <property name="top-attach">10</property>
+          </packing>
         </child>
         <child>
-          <placeholder/>
+          <object class="GtkEntry" id="offset-y-entry">
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="max-length">4</property>
+            <property name="text" translatable="yes">0</property>
+            <property name="input-purpose">number</property>
+          </object>
+          <packing>
+            <property name="left-attach">9</property>
+            <property name="top-attach">11</property>
+          </packing>
         </child>
         <child>
           <placeholder/>
