@@ -12,6 +12,6 @@ export GALAXY_SDK_PATH=<galaxy_sdk_location>
 The following commands should build the program:
 
 ```
-cmake .
+mkdir build && cd build && cmake ../
 make
 ```

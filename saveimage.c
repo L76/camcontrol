@@ -1,11 +1,8 @@
-#include "png.h"
+#include "std.h"
 #include "saveimage.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <gmodule.h>
-
 #include "utils.h"
+#include <png.h>
+#include <gmodule.h>
 
 static void
 PngWriteCallback(png_structp  png_ptr, png_bytep data, png_size_t length)

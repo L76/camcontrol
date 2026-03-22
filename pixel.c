@@ -1,7 +1,7 @@
+#include "std.h"
+#include "galaxy.h"
 #include "pixel.h"
-#include <GxIAPI.h>
-#include "DxImageProc.h"
-#include <stdio.h>
+
 
 /**
 \brief Convert frame date to suitable pixel format

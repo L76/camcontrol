@@ -8,7 +8,7 @@ find_package( Threads REQUIRED )
 find_library(GXIAPI_LIBRARY names gxiapi PATHS ENV GALAXY_SDK_PATH REQUIRED)
 find_path(GXIAPI_INCLUDE_PATH "GxIAPI.h" PATHS ENV GALAXY_SDK_PATH PATH_SUFFIXES "inc" REQUIRED)
 
-find_package(PkgConfig REQUIRED) 
+find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
 add_definitions(${GTK3_CFLAGS_OTHER})
 
@@ -21,3 +21,9 @@ set(SOURCE_FILES
 include_directories(${PROJECT_NAME} ${GXIAPI_INCLUDE_PATH} ${PNG_INCLUDE_DIR} ${GTK3_INCLUDE_DIRS})
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 target_link_libraries(${PROJECT_NAME} Threads::Threads ${GXIAPI_LIBRARY} ${PNG_LIBRARY} ${GTK3_LIBRARIES})
+
+add_custom_command(
+    TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+            ${CMAKE_CURRENT_BINARY_DIR}/../camera-control.glade
+            ${CMAKE_CURRENT_BINARY_DIR}/camera-control.glade)

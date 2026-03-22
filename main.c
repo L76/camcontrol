@@ -1,17 +1,12 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <pthread.h>
-#include <stdbool.h>
-#include <time.h>
-#include <GxIAPI.h>
-#include <unistd.h>
+#include "std.h"
+#include "galaxy.h"
 #include "pixel.h"
 #include "utils.h"
 #include "saveimage.h"
 
 #include <gtk/gtk.h>
-#include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib/gstdio.h>
+#include <glib.h>
 
 #define FRAME_W 1920
 #define FRAME_H 1200
@@ -23,14 +18,20 @@ typedef struct {
 } AcqCbArg_T;
 
 typedef struct {
-    GtkWidget *recordBtn;
-    GtkWidget *stopBtn;
-    GtkWidget *resetBtn;
-    GtkWidget *expositionEntry;
-    GtkWidget *gainEntry;
-    GtkWidget *suffixEntry;
-    GtkWidget *applyBtn;
+    GtkWidget* recordBtn;
+    GtkWidget* stopBtn;
+    GtkWidget* resetBtn;
+    GtkWidget* expositionEntry;
+    GtkWidget* gainEntry;
+    GtkWidget* suffixEntry;
+    GtkWidget* applyBtn;
     GtkWidget* colorComboBox;
+    GtkWidget* initBtn;
+    GtkWidget* acqStartBtn;
+    GtkWidget* acqStopBtn;
+    GtkWidget* swapDevBtn;
+    GtkWidget* hMirror[2];
+    GtkWidget* wMirror[2];
 } ButtonIface_T;
 
 typedef enum {
@@ -81,6 +82,7 @@ static int CamId0 = 0;
 static int CamId1 = 1;
 static GX_DEV_HANDLE CamHandle[2];
 static AcqCbArg_T AcqHandle[2];
+static FakeFrameState_T fakeFrameState[2];
 
 struct tm currentDateTime() {
     time_t     now = time(0);
@@ -94,11 +96,359 @@ GError *error = NULL;
 
 const int resolution_w = FRAME_W/3, resolution_h = FRAME_H/3;
 
+gboolean first_init = TRUE;
+gboolean acq_enable = FALSE;
+gboolean cams_swapped = FALSE;
+gboolean fake_cameras = FALSE;
 gboolean record_on = FALSE;
 gboolean settings_changed = FALSE;
 gboolean record_resume = FALSE;
 
 unsigned char *frame[2], *frame_shadow[2];
+
+
+static unsigned char*
+getPixel(unsigned char *pixdata, int j, int i, int w, int bps)
+{
+    return &pixdata[(j*w + i)*bps];
+}
+
+
+void
+check_cam_status_and_exit(int line, int camId, GX_STATUS camStatus)
+{
+    if (camStatus != GX_STATUS_SUCCESS) {
+        printf("%d: camera task: CAM%d init error: %d\r\n", line, camId, camStatus);
+        if (camStatus != GX_STATUS_NOT_IMPLEMENTED)
+            pthread_exit(NULL);
+    } else {
+        printf("%d: camera task: CAM%d OK\r\n", line, camId);
+    }
+}
+
+
+void
+new_frame_push(const int camId, StoredFrame_T *new_frame)
+{
+    g_async_queue_push(DisplayQ[camId], g_atomic_rc_box_acquire(new_frame));
+
+    if (record_on)
+        g_async_queue_push(RecordQ[camId],  g_atomic_rc_box_acquire(new_frame));
+}
+
+
+int
+init_devices()
+{
+    uint32_t nDev = 0;
+    GX_STATUS status = GXUpdateDeviceList(&nDev, 1000);
+    printf("Devices found:%d\r\n", nDev);
+
+    if (nDev < 2) {
+        return -1;
+    }
+
+    GX_STATUS camStatus[2] = {GX_STATUS_SUCCESS};
+
+    for (int i = 0; i < 2; i++)
+
+        camStatus[i] = GXOpenDeviceByIndex(i+1, &CamHandle[i]);
+
+    printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
+
+    size_t nSize[2] = { 0, 0 };
+    for (int i = 0; i < 2; i++)
+        camStatus[i] = GXGetStringMaxLength(CamHandle[i], GX_STRING_DEVICE_SERIAL_NUMBER, &nSize[i]);
+
+    printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
+
+    char *idText[2];
+    for (int i = 0; i < 2; i++)
+        idText[i] = malloc(nSize[i]);
+
+    for (int i = 0; i < 2; i++)
+        camStatus[i] = GXGetString(CamHandle[i], GX_STRING_DEVICE_SERIAL_NUMBER, idText[i], &nSize[i]);
+
+    printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
+    printf("CAM0-id: %s; CAM1-id: %s\r\n", idText[0], idText[1]);
+
+    for (int i = 0; i < 2; i++)
+        free(idText[i]);
+
+    return 0;
+}
+
+
+void
+OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData)
+{
+    AcqCbArg_T *arg = pFrameData->pUserParam;
+    StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
+
+    PixelFormatConvert(arg->pState, pFrameData);
+    new_frame->id = pFrameData->nFrameID;
+    memcpy(new_frame->data, arg->pState->RBGimageBuf, FRAME_H*FRAME_W*3);
+    new_frame_push(arg->camId, new_frame);
+    g_atomic_rc_box_release(new_frame);
+}
+
+
+void*
+camera_configure(void* param)
+{
+    int camId = *(int*)(param);
+    AcqHandle[camId].camId = camId;
+    AcqHandle[camId].device=CamHandle[camId];
+    GX_STATUS  camStatus = GX_STATUS_SUCCESS;
+    int64_t  colorFilter = GX_COLOR_FILTER_NONE;
+    int64_t  payloadSize = 0;
+
+    camStatus = GXGetEnum(CamHandle[camId], GX_ENUM_PIXEL_COLOR_FILTER, &colorFilter);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXGetInt(CamHandle[camId], GX_INT_PAYLOAD_SIZE, &payloadSize);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    printf("CAM%d Color Filter=%ld, Payload Size=%ld\r\n", camId, colorFilter, payloadSize);
+
+    AcqHandle[camId].pState = PixelProcInit(payloadSize, colorFilter);
+    //Set exposure
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
+    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_EXPOSURE_TIME, config.exposition);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    //Set gain
+    camStatus =  GXSetEnum(CamHandle[camId], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_GAIN, config.gain);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    printf("CAM %d opened\r\n", camId);
+    
+    camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, FALSE);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, FALSE);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_MODE, GX_TRIGGER_MODE_ON);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_ACTIVATION, GX_TRIGGER_ACTIVATION_RISINGEDGE);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+/* 
+    // PROBABLY NOT IMPLEMENTED:
+    // Trigger configuration start
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_CONTROL_MODE, GX_ENUM_TRANSFER_CONTROL_MODE_USERCONTROLED);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    //Sets the transfer operation mode to the specified transfer frame mode.
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_OPERATION_MODE, GX_ENUM_TRANSFER_OPERATION_MODE_MULTIBLOCK);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    //Sets the number of output frames per command.
+    camStatus = GXSetInt(CamHandle[camId], GX_INT_TRANSFER_BLOCK_COUNT, 1);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+*/
+
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_SELECTOR, GX_ENUM_TRIGGER_SELECTOR_FRAME_START);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_SOURCE, GX_TRIGGER_SOURCE_LINE0);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    // End of trigger configuration
+
+    return 0;
+}
+
+
+void*
+camera_acq_start(void* param)
+{
+    int camId = *(int*)(param);
+    AcqHandle[camId].camId = camId;
+    AcqHandle[camId].device = CamHandle[camId];
+    GX_STATUS  camStatus = GX_STATUS_SUCCESS;
+
+    camStatus = GXRegisterCaptureCallback(CamHandle[camId], &AcqHandle[camId], OnFrameCallbackFun);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+   
+    camStatus = GXSendCommand(CamHandle[camId], GX_COMMAND_ACQUISITION_START);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    if (camStatus != GX_STATUS_SUCCESS)
+        return (void*)1;
+    
+    return 0;
+}
+
+
+void*
+camera_acq_stop(void* param)
+{
+    int camId = *(int*)(param);
+    GX_STATUS  camStatus = GX_STATUS_SUCCESS;
+
+    camStatus = GXSendCommand(CamHandle[camId], GX_COMMAND_ACQUISITION_STOP);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+    
+    if (camStatus != GX_STATUS_SUCCESS)
+        return (void*)1;
+    
+    return 0;
+}
+
+
+void*
+FakeFrameTask(void *param)
+{
+    FakeFrameState_T *state = param;
+
+    const int brd = 100;
+    const int sx = 200, sy = 200;
+    int x = brd + rand()%(FRAME_W-2*brd-sx),
+        y = brd + rand()%(FRAME_H-2*brd-sy);
+    int xinc = 2, yinc = 2;
+
+
+    while (1) {
+        if (!acq_enable) {
+            usleep(100000);
+            continue;
+        }
+
+        StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
+        bzero(new_frame->data, FRAME_H*FRAME_W*3);
+        new_frame->id = state->frameId;
+        state->frameId += 1;
+
+        for (int j = y; j < y + sy; j++) {
+            for (int i = x; i < x + sx; i++) {
+                unsigned char *pixel = getPixel(new_frame->data, j, i, FRAME_W, 3);
+                pixel[0] = rand() % 256;
+                pixel[1] = rand() % 256;
+                pixel[2] = rand() % 256;
+            }
+        }
+
+        x += xinc; if (x + sx + brd >= FRAME_W || (x < brd)) xinc = -xinc;
+        y += yinc; if (y + sy + brd >= FRAME_H || (y < brd)) yinc = -yinc;
+
+        new_frame_push(state->camId, new_frame);
+        g_atomic_rc_box_release(new_frame);
+
+        usleep(40000);
+    }
+}
+
+
+static void
+button_init(GtkWidget *widget, gpointer data)
+{
+    if (first_init) {
+        g_print("(Re-)initialising devices \n");
+        first_init = FALSE;
+        if (!init_devices()) {
+            camera_configure(&CamId0);
+            camera_configure(&CamId1);
+        } else {
+            fake_cameras = TRUE;
+            fakeFrameState[0].camId = 0;
+            fakeFrameState[0].frameId = 0;
+            pthread_t tid7;
+            pthread_attr_t attr7;
+            pthread_attr_init (&attr7);
+            pthread_create(&tid7, &attr7, FakeFrameTask, &fakeFrameState[0]);
+
+            fakeFrameState[1].camId = 1;
+            fakeFrameState[1].frameId = 0;
+            pthread_t tid8;
+            pthread_attr_t attr8;
+            pthread_attr_init (&attr8);
+            pthread_create(&tid8, &attr8, FakeFrameTask, &fakeFrameState[1]);
+        }
+    } else {
+        g_print("Already initialised \n");
+    }
+}
+
+
+static void
+button_acq_start(GtkWidget *widget, gpointer data)
+{
+    ButtonIface_T *buttons = (ButtonIface_T *) data;
+    
+    if (!acq_enable) {
+        g_print("Starting acquisition \n");
+
+        if (gtk_toggle_button_get_active((GtkToggleButton*)buttons->swapDevBtn) && !cams_swapped) {
+            g_print("Swapping cameras\n");
+            SWAP(CamHandle[0], CamHandle[1]);
+            cams_swapped = TRUE;
+        }
+
+        if (!gtk_toggle_button_get_active((GtkToggleButton*)buttons->swapDevBtn) && cams_swapped) {
+            g_print("Swapping cameras\n");
+            SWAP(CamHandle[0], CamHandle[1]);
+            cams_swapped = FALSE;
+        }
+
+        acq_enable = TRUE;
+
+        if (!fake_cameras && (camera_acq_start(&CamId0) || camera_acq_start(&CamId1)))
+            acq_enable = FALSE;
+
+    } else {
+        g_print("Acquisition already running \n");
+    }
+}
+
+
+static void
+button_acq_stop(GtkWidget *widget, gpointer data)
+{
+    if (acq_enable) {
+        g_print("Stopping acquisition \n");
+        acq_enable = FALSE;
+        if (!fake_cameras && (camera_acq_stop(&CamId0) || camera_acq_stop(&CamId1)))
+            acq_enable = TRUE;
+    } else {
+        g_print("Acquisition not running \n");
+    }
+}
+
+static void
+button_mirror_state(GtkWidget *widget, gpointer data)
+{
+    ButtonIface_T *buttons = (ButtonIface_T *) data;
+    GX_STATUS  camStatus = GX_STATUS_SUCCESS;
+    
+    if (fake_cameras)
+        return;
+
+    for (int camId = 0; camId < 2; camId++) {
+        if (gtk_toggle_button_get_active((GtkToggleButton*)buttons->hMirror[camId])) {
+            camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, TRUE);
+            check_cam_status_and_exit(__LINE__, camId, camStatus);
+        } else {
+            camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, FALSE);
+            check_cam_status_and_exit(__LINE__, camId, camStatus);
+        }
+
+        if (gtk_toggle_button_get_active((GtkToggleButton*)buttons->wMirror[camId])) {
+            camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, TRUE);
+            check_cam_status_and_exit(__LINE__, camId, camStatus);
+        } else {
+            camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, FALSE);
+            check_cam_status_and_exit(__LINE__, camId, camStatus);
+        }
+    }
+}
+
 
 static void
 button_record(GtkWidget *widget, gpointer data)
@@ -120,6 +470,7 @@ button_record(GtkWidget *widget, gpointer data)
 
   record_on = TRUE;
 }
+
 
 static void
 button_stop(GtkWidget *widget, gpointer data)
@@ -261,214 +612,6 @@ ui_update_task(gpointer user_data)
     return TRUE;
 }
 
-static unsigned char*
-getPixel(unsigned char *pixdata, int j, int i, int w, int bps)
-{
-    return &pixdata[(j*w + i)*bps];
-}
-
-void
-check_cam_status_and_exit(int line, int camId, GX_STATUS camStatus)
-{
-    if (camStatus != GX_STATUS_SUCCESS) {
-         printf("%d: camera task: CAM%d init error: %d\r\n", line, camId, camStatus);
-         if (camStatus != GX_STATUS_NOT_IMPLEMENTED)
-            pthread_exit(NULL);
-    } else {
-        printf("%d: camera task: CAM%d OK\r\n", line, camId);
-    }
-}
-
-void
-new_frame_push(const int camId, StoredFrame_T *new_frame)
-{
-    g_async_queue_push(DisplayQ[camId], g_atomic_rc_box_acquire(new_frame));
-
-    if (record_on)
-        g_async_queue_push(RecordQ[camId],  g_atomic_rc_box_acquire(new_frame));
-}
-
-void
-OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData)
-{
-    AcqCbArg_T *arg = pFrameData->pUserParam;
-    StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
-
-    PixelFormatConvert(arg->pState, pFrameData);
-    new_frame->id = pFrameData->nFrameID;
-    memcpy(new_frame->data, arg->pState->RBGimageBuf, FRAME_H*FRAME_W*3);
-    new_frame_push(arg->camId, new_frame);
-    g_atomic_rc_box_release(new_frame);
-}
-
-void*
-FakeFrameTask(void *param)
-{
-    FakeFrameState_T *state = param;
-
-    const int brd = 100;
-    const int sx = 200, sy = 200;
-    int x = brd + rand()%(FRAME_W-2*brd-sx),
-        y = brd + rand()%(FRAME_H-2*brd-sy);
-    int xinc = 2, yinc = 2;
-
-
-    while (1) {
-        StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
-        bzero(new_frame->data, FRAME_H*FRAME_W*3);
-        new_frame->id = state->frameId;
-        state->frameId += 1;
-
-        for (int j = y; j < y + sy; j++) {
-            for (int i = x; i < x + sx; i++) {
-                unsigned char *pixel = getPixel(new_frame->data, j, i, FRAME_W, 3);
-                pixel[0] = rand() % 256;
-                pixel[1] = rand() % 256;
-                pixel[2] = rand() % 256;
-            }
-        }
-
-        x += xinc; if (x + sx + brd >= FRAME_W || (x < brd)) xinc = -xinc;
-        y += yinc; if (y + sy + brd >= FRAME_H || (y < brd)) yinc = -yinc;
-
-        new_frame_push(state->camId, new_frame);
-        g_atomic_rc_box_release(new_frame);
-
-        usleep(40000);
-    }
-}
-
-int
-init_devices()
-{
-    uint32_t nDev = 0;
-    GX_STATUS status = GXUpdateDeviceList(&nDev, 1000);
-    printf("Devices found:%d\r\n", nDev);
-
-    if (nDev < 2) {
-        return -1;
-    }
-
-    GX_STATUS camStatus[2] = {GX_STATUS_SUCCESS};
-
-    for (int i = 0; i < 2; i++)
-        camStatus[i] = GXOpenDeviceByIndex(i+1, &CamHandle[i]);
-
-    printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
-
-    size_t nSize[2] = { 0, 0 };
-    for (int i = 0; i < 2; i++)
-        camStatus[i] = GXGetStringMaxLength(CamHandle[i], GX_STRING_DEVICE_SERIAL_NUMBER, &nSize[i]);
-
-    printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
-
-    char *idText[2];
-    for (int i = 0; i < 2; i++)
-        idText[i] = malloc(nSize[i]);
-
-    for (int i = 0; i < 2; i++)
-        camStatus[i] = GXGetString(CamHandle[i], GX_STRING_DEVICE_SERIAL_NUMBER, idText[i], &nSize[i]);
-
-    printf("%d: %d %d\r\n", __LINE__, camStatus[0], camStatus[1]);
-    printf("CAM0-id: %s; CAM1-id: %s\r\n", idText[0], idText[1]);
-
-    static const char cam0_id[] = "FDE24060215";
-    if (strncmp(idText[0], cam0_id, MIN(sizeof(cam0_id), nSize[0]))) {
-        printf("SWAPING CAMERAS!\r\n");
-        SWAP(CamHandle[0], CamHandle[1]);
-    }
-
-    for (int i = 0; i < 2; i++)
-        free(idText[i]);
-
-    return 0;
-}
-
-
-void*
-camera_start(void* param)
-{
-    int camId = *(int*)(param);
-    AcqHandle[camId].camId = camId;
-    AcqHandle[camId].device=CamHandle[camId];
-    GX_STATUS  camStatus = GX_STATUS_SUCCESS;
-    int64_t  colorFilter = GX_COLOR_FILTER_NONE;
-    int64_t  payloadSize = 0;
-
-    camStatus = GXGetEnum(CamHandle[camId], GX_ENUM_PIXEL_COLOR_FILTER, &colorFilter);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    camStatus = GXGetInt(CamHandle[camId], GX_INT_PAYLOAD_SIZE, &payloadSize);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    printf("CAM%d Color Filter=%ld, Payload Size=%ld\r\n", camId, colorFilter, payloadSize);
-
-    AcqHandle[camId].pState = PixelProcInit(payloadSize, colorFilter);
-    //Set exposure
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-    // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
-    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_EXPOSURE_TIME, config.exposition);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-    //Set gain
-    camStatus =  GXSetEnum(CamHandle[camId], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_GAIN, config.gain);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    printf("CAM %d opened\r\n", camId);
-
-    if (camId == 0) {
-        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, TRUE);
-        check_cam_status_and_exit(__LINE__, camId, camStatus);
-        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, TRUE);
-        check_cam_status_and_exit(__LINE__, camId, camStatus);
-    }
-
-    if (camId == 1) {
-        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, TRUE);
-        check_cam_status_and_exit(__LINE__, camId, camStatus);
-        camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, TRUE);
-        check_cam_status_and_exit(__LINE__, camId, camStatus);
-    }
-
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_MODE, GX_TRIGGER_MODE_ON);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_ACTIVATION, GX_TRIGGER_ACTIVATION_RISINGEDGE);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    // Trigger configuration start
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_CONTROL_MODE, GX_ENUM_TRANSFER_CONTROL_MODE_USERCONTROLED);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    //Sets the transfer operation mode to the specified transfer frame mode.
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_OPERATION_MODE, GX_ENUM_TRANSFER_OPERATION_MODE_MULTIBLOCK);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    //Sets the number of output frames per command.
-    camStatus = GXSetInt(CamHandle[camId], GX_INT_TRANSFER_BLOCK_COUNT, 1);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_SELECTOR, GX_ENUM_TRIGGER_SELECTOR_FRAME_START);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_SOURCE, GX_TRIGGER_SOURCE_LINE0);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-    // End of trigger configuration
-
-    //Register Callback
-    camStatus = GXRegisterCaptureCallback(CamHandle[camId], &AcqHandle[camId], OnFrameCallbackFun);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    camStatus = GXSendCommand(CamHandle[camId], GX_COMMAND_ACQUISITION_START);
-    check_cam_status_and_exit(__LINE__, camId, camStatus);
-
-    return 0;
-}
 
 void*
 display_q_task(void* param)
@@ -619,16 +762,31 @@ main(int argc, char **argv)
     buttons.stopBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-stop"));
     buttons.resetBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-reset"));
     buttons.applyBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-apply"));
+    buttons.initBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-init-devices"));
+    buttons.acqStartBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-acq-start"));
+    buttons.acqStopBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-acq-stop"));
+    buttons.swapDevBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-swap-devices"));
+    buttons.hMirror[0] = GTK_WIDGET(gtk_builder_get_object (builder, "button-h-mirror-0"));
+    buttons.wMirror[0] = GTK_WIDGET(gtk_builder_get_object (builder, "button-w-mirror-0"));
+    buttons.hMirror[1] = GTK_WIDGET(gtk_builder_get_object (builder, "button-h-mirror-1"));
+    buttons.wMirror[1] = GTK_WIDGET(gtk_builder_get_object (builder, "button-w-mirror-1"));
 
     buttons.expositionEntry = GTK_WIDGET(gtk_builder_get_object (builder, "exposition-entry"));
     buttons.gainEntry = GTK_WIDGET(gtk_builder_get_object (builder, "gain-entry"));
     buttons.suffixEntry = GTK_WIDGET(gtk_builder_get_object (builder, "suffix-entry"));
     buttons.colorComboBox = GTK_WIDGET(gtk_builder_get_object (builder, "combo-box-color-mode"));
 
-    g_signal_connect (G_OBJECT(buttons.recordBtn), "clicked", G_CALLBACK (button_record), &buttons);
-    g_signal_connect (G_OBJECT(buttons.stopBtn),   "clicked", G_CALLBACK (button_stop), &buttons);
-    g_signal_connect (G_OBJECT(buttons.resetBtn),  "clicked", G_CALLBACK (button_reset), &buttons);
-    g_signal_connect (G_OBJECT(buttons.applyBtn),  "clicked", G_CALLBACK (button_apply), &buttons);
+    g_signal_connect(G_OBJECT(buttons.recordBtn), "clicked", G_CALLBACK (button_record), &buttons);
+    g_signal_connect(G_OBJECT(buttons.stopBtn),   "clicked", G_CALLBACK (button_stop), &buttons);
+    g_signal_connect(G_OBJECT(buttons.resetBtn),  "clicked", G_CALLBACK (button_reset), &buttons);
+    g_signal_connect(G_OBJECT(buttons.applyBtn),  "clicked", G_CALLBACK (button_apply), &buttons);
+    g_signal_connect(G_OBJECT(buttons.initBtn),  "clicked", G_CALLBACK (button_init), &buttons);
+    g_signal_connect(G_OBJECT(buttons.acqStartBtn),  "clicked", G_CALLBACK (button_acq_start), &buttons);
+    g_signal_connect(G_OBJECT(buttons.acqStopBtn),  "clicked", G_CALLBACK (button_acq_stop), &buttons);
+    g_signal_connect(G_OBJECT(buttons.hMirror[0]), "toggled", G_CALLBACK(button_mirror_state), &buttons);
+    g_signal_connect(G_OBJECT(buttons.wMirror[0]), "toggled", G_CALLBACK(button_mirror_state), &buttons);
+    g_signal_connect(G_OBJECT(buttons.hMirror[1]), "toggled", G_CALLBACK(button_mirror_state), &buttons);
+    g_signal_connect(G_OBJECT(buttons.wMirror[1]), "toggled", G_CALLBACK(button_mirror_state), &buttons);
 
     progress_bar = GTK_WIDGET(gtk_builder_get_object (builder, "progress-bar"));
     gtk_progress_bar_set_show_text (GTK_PROGRESS_BAR(progress_bar), TRUE);
@@ -657,8 +815,7 @@ main(int argc, char **argv)
         pthread_create (&worker[i].tid, &worker[i].attr, worker[i].proc, worker[i].args);
     }
 
-    FakeFrameState_T fakeFrameState[2];
-
+/*
     if (!init_devices()) {
         camera_start(&CamId0);
         camera_start(&CamId1);
@@ -677,6 +834,7 @@ main(int argc, char **argv)
         pthread_attr_init (&attr8);
         pthread_create(&tid8, &attr8, FakeFrameTask, &fakeFrameState[1]);
     }
+*/
 
     gtk_main();
 

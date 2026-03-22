@@ -1,7 +1,5 @@
+#include "std.h"
 #include "utils.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 uint8_t*
 makeGradientRGBA(const int w, const int h)
