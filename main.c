@@ -56,13 +56,9 @@ static Config_T config = {
 
 typedef struct {
     uint64_t id;
-    uint8_t data[FRAME_W*FRAME_H*3];
-} StoredFrame_T;
-
-typedef struct {
-    uint64_t id;
-    uint8_t data[FRAME_W*FRAME_H];
-} StoredFrameMono_T;
+    uint32_t h, w;
+    uint32_t bpp;
+} StoredFrameD_T;
 
 typedef struct {
     uint64_t frameId;
@@ -107,6 +103,31 @@ gboolean record_resume = FALSE;
 unsigned char *frame[2], *frame_shadow[2];
 
 
+static StoredFrameD_T*
+sframealloc(int32_t h, int32_t w, int32_t bpp) {
+    //StoredFrameD_T* sf = malloc(sizeof(StoredFrameD_T) + h*w*bpp);
+    StoredFrameD_T* sf = g_atomic_rc_box_alloc(sizeof(StoredFrameD_T) + h*w*bpp);
+    sf->h = h;
+    sf->w = w;
+    sf->bpp = bpp;
+    return sf;
+}
+
+static void
+sframefree(StoredFrameD_T* sf) {
+    g_atomic_rc_box_release(sf);
+}
+
+uint8_t*
+sframedata(StoredFrameD_T* sf) {
+    return (uint8_t*)sf + sizeof(StoredFrameD_T);
+}
+
+uint32_t
+sframedatasize(StoredFrameD_T* sf) {
+    return sf->w * sf->h * sf->bpp;
+}
+
 static unsigned char*
 getPixel(unsigned char *pixdata, int j, int i, int w, int bps)
 {
@@ -128,7 +149,7 @@ check_cam_status_and_exit(int line, int camId, GX_STATUS camStatus)
 
 
 void
-new_frame_push(const int camId, StoredFrame_T *new_frame)
+new_frame_push(const int camId, StoredFrameD_T* new_frame)
 {
     g_async_queue_push(DisplayQ[camId], g_atomic_rc_box_acquire(new_frame));
 
@@ -182,12 +203,14 @@ init_devices()
 void
 OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData)
 {
-    AcqCbArg_T *arg = pFrameData->pUserParam;
-    StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
+    AcqCbArg_T* arg = pFrameData->pUserParam;
+    //StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
+    StoredFrameD_T* new_frame = sframealloc(FRAME_H, FRAME_W, 3);
 
     PixelFormatConvert(arg->pState, pFrameData);
     new_frame->id = pFrameData->nFrameID;
-    memcpy(new_frame->data, arg->pState->RBGimageBuf, FRAME_H*FRAME_W*3);
+    //memcpy(new_frame->data, arg->pState->RBGimageBuf, FRAME_H*FRAME_W*3);
+    memcpy(sframedata(new_frame), arg->pState->RBGimageBuf, sframedatasize(new_frame));
     new_frame_push(arg->camId, new_frame);
     g_atomic_rc_box_release(new_frame);
 }
@@ -321,14 +344,14 @@ FakeFrameTask(void *param)
             continue;
         }
 
-        StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
-        bzero(new_frame->data, FRAME_H*FRAME_W*3);
+        StoredFrameD_T* new_frame = sframealloc(FRAME_H, FRAME_W, 3);
+        bzero(sframedata(new_frame), sframedatasize(new_frame));
         new_frame->id = state->frameId;
         state->frameId += 1;
 
         for (int j = y; j < y + sy; j++) {
             for (int i = x; i < x + sx; i++) {
-                unsigned char *pixel = getPixel(new_frame->data, j, i, FRAME_W, 3);
+                unsigned char *pixel = getPixel(sframedata(new_frame), j, i, FRAME_W, 3);
                 pixel[0] = rand() % 256;
                 pixel[1] = rand() % 256;
                 pixel[2] = rand() % 256;
@@ -618,13 +641,13 @@ display_q_task(void* param)
 {
     int camId = *(int*)(param);
     while (1) {
-        StoredFrame_T *next_frame = g_async_queue_pop(DisplayQ[camId]);
+        StoredFrameD_T* next_frame = g_async_queue_pop(DisplayQ[camId]);
 
         const int W = resolution_w * 3;
         for (int j=0; j<resolution_h; j++) {
             for (int i=0; i<resolution_w; i++)
                 memcpy(getPixel(frame_shadow[camId], j, i, resolution_w, 3),
-                                      getPixel(next_frame->data, j*3, i*3, W, 3),
+                                      getPixel(sframedata(next_frame), j*3, i*3, W, 3),
                                                                           3);
         }
 
@@ -668,25 +691,25 @@ record_q_task(void* param)
 {
     int camId = *(int*)(param);
     while (1) {
-        StoredFrame_T *in_frame  = g_async_queue_pop(RecordQ[camId]);
-        StoredFrameMono_T *out_frame = g_atomic_rc_box_new(StoredFrameMono_T);
+        StoredFrameD_T* in_frame  = g_async_queue_pop(RecordQ[camId]);
+        StoredFrameD_T* out_frame = sframealloc(in_frame->h, in_frame->w, 1);
 
         out_frame->id = in_frame->id;
         fprintf(stdout, "Cam-%d frame %d actual id %ld\r\n", camId, FramesRecorded[camId], out_frame->id);
 
         switch(config.mode) {
         case MODE_RED:
-            RGB24RedtoGrayscale8(in_frame->data, out_frame->data, FRAME_H, FRAME_W);
+            RGB24RedtoGrayscale8(sframedata(in_frame), sframedata(out_frame), in_frame->h, in_frame->w);
             break;
         case MODE_GREEN:
-            RGB24GreentoGrayscale8(in_frame->data, out_frame->data, FRAME_H, FRAME_W);
+            RGB24GreentoGrayscale8(sframedata(in_frame), sframedata(out_frame), in_frame->h, in_frame->w);
             break;
         case MODE_BLUE:
-            RGB24BluetoGrayscale8(in_frame->data, out_frame->data, FRAME_H, FRAME_W);
+            RGB24BluetoGrayscale8(sframedata(in_frame), sframedata(out_frame), in_frame->h, in_frame->w);
             break;
         case MODE_GRAY:
         default:
-            RGB24toGrayscale8(in_frame->data, out_frame->data, FRAME_H, FRAME_W);
+            RGB24toGrayscale8(sframedata(in_frame), sframedata(out_frame), in_frame->h, in_frame->w);
             break;
         }
 
@@ -703,10 +726,11 @@ store_q_task(void* param)
     char filename[128] = {0};
 
     while (1) {
-        StoredFrameMono_T* next_frame = g_async_queue_pop(StoreQ[camId]);
+        //StoredFrameMono_T* next_frame = g_async_queue_pop(StoreQ[camId]);
+        StoredFrameD_T* next_frame = g_async_queue_pop(StoreQ[camId]);
         sprintf(filename, "%s/cam%d-%05d-%08ld.png", config.dirname, camId, FramesStored[camId], next_frame->id);
 
-        if (savePngToFile(filename, next_frame->data, FRAME_W, FRAME_H)) {
+        if (savePngToFile(filename, sframedata(next_frame), next_frame->w, next_frame->h)) {
             g_printerr("unable to save png!\r\n");
         }
 
@@ -814,27 +838,6 @@ main(int argc, char **argv)
         pthread_attr_init (&worker[i].attr);
         pthread_create (&worker[i].tid, &worker[i].attr, worker[i].proc, worker[i].args);
     }
-
-/*
-    if (!init_devices()) {
-        camera_start(&CamId0);
-        camera_start(&CamId1);
-    } else {
-        fakeFrameState[0].camId = 0;
-        fakeFrameState[0].frameId = 0;
-        pthread_t tid7;
-        pthread_attr_t attr7;
-        pthread_attr_init (&attr7);
-        pthread_create(&tid7, &attr7, FakeFrameTask, &fakeFrameState[0]);
-
-        fakeFrameState[1].camId = 1;
-        fakeFrameState[1].frameId = 0;
-        pthread_t tid8;
-        pthread_attr_t attr8;
-        pthread_attr_init (&attr8);
-        pthread_create(&tid8, &attr8, FakeFrameTask, &fakeFrameState[1]);
-    }
-*/
 
     gtk_main();
 
