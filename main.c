@@ -8,8 +8,8 @@
 #include <glib/gstdio.h>
 #include <glib.h>
 
-#define FRAME_W 1920
-#define FRAME_H 1200
+//#define FRAME_W 1920
+//#define FRAME_H 1200
 
 typedef struct {
     int camId;
@@ -21,12 +21,15 @@ typedef struct {
     GtkWidget* recordBtn;
     GtkWidget* stopBtn;
     GtkWidget* resetBtn;
-    GtkWidget* expositionEntry;
-    GtkWidget* gainEntry;
+    GtkWidget* expositionEntry[2];
+    GtkWidget* gainEntry[2];
+    GtkWidget* framewEntry[2];
+    GtkWidget* framehEntry[2];
+    GtkWidget* offsetxEntry[2];
+    GtkWidget* offsetyEntry[2];
     GtkWidget* suffixEntry;
     GtkWidget* applyBtn;
-    GtkWidget* colorComboBox;
-    GtkWidget* initBtn;
+    GtkWidget* colorComboBox[2];
     GtkWidget* acqStartBtn;
     GtkWidget* acqStopBtn;
     GtkWidget* swapDevBtn;
@@ -39,18 +42,25 @@ typedef enum {
 } color_mode_t;
 
 typedef struct {
-    color_mode_t mode;
-    unsigned int frames_record_max;
-    double gain;
-    double exposition;
+    uint64_t frames_record_max;
+    uint64_t camwmax[2], camhmax[2];
+    color_mode_t mode[2];
+    double gain[2];
+    double exposition[2];
+    unsigned int framew[2], frameh[2];
+    unsigned int offsetx[2], offsety[2];
     char dirname[64 + 1];
 } Config_T;
 
 static Config_T config = {
-    .mode = MODE_GRAY,
+    .mode = {MODE_GRAY, MODE_GRAY},
     .frames_record_max = 2500,
-    .gain = 23.0,
-    .exposition = 2000,
+    .gain = {23.0, 23.0},
+    .exposition = {2000, 2000},
+    .framew = {1920, 1920},
+    .frameh = {1200, 1200},
+    .offsetx = {0, 0},
+    .offsety = {0, 0},
     .dirname = {0}
 };
 
@@ -86,47 +96,47 @@ struct tm currentDateTime() {
     return tstruct;
 }
 
-GtkImage *image0, *image1;
+GtkImage* image[2];
 GtkWidget *progress_bar;
 GError *error = NULL;
 
-const int resolution_w = FRAME_W/3, resolution_h = FRAME_H/3;
-
-gboolean first_init = TRUE;
 gboolean acq_enable = FALSE;
 gboolean cams_swapped = FALSE;
 gboolean fake_cameras = FALSE;
 gboolean record_on = FALSE;
-gboolean settings_changed = FALSE;
 gboolean record_resume = FALSE;
 
-unsigned char *frame[2], *frame_shadow[2];
+StoredFrameD_T *frame[2], *frame_shadow[2];
 
-
-static StoredFrameD_T*
-sframealloc(int32_t h, int32_t w, int32_t bpp) {
-    //StoredFrameD_T* sf = malloc(sizeof(StoredFrameD_T) + h*w*bpp);
-    StoredFrameD_T* sf = g_atomic_rc_box_alloc(sizeof(StoredFrameD_T) + h*w*bpp);
-    sf->h = h;
-    sf->w = w;
-    sf->bpp = bpp;
-    return sf;
-}
-
-static void
-sframefree(StoredFrameD_T* sf) {
-    g_atomic_rc_box_release(sf);
-}
 
 uint8_t*
 sframedata(StoredFrameD_T* sf) {
     return (uint8_t*)sf + sizeof(StoredFrameD_T);
 }
 
+
 uint32_t
 sframedatasize(StoredFrameD_T* sf) {
     return sf->w * sf->h * sf->bpp;
 }
+
+
+static StoredFrameD_T*
+sframealloc(int32_t h, int32_t w, int32_t bpp) {
+    StoredFrameD_T* sf = g_atomic_rc_box_alloc(sizeof(StoredFrameD_T) + h*w*bpp);
+    sf->h = h;
+    sf->w = w;
+    sf->bpp = bpp;
+    memset(sframedata(sf), 0, sframedatasize(sf));
+    return sf;
+}
+
+
+static void
+sframefree(StoredFrameD_T* sf) {
+    g_atomic_rc_box_release(sf);
+}
+
 
 static unsigned char*
 getPixel(unsigned char *pixdata, int j, int i, int w, int bps)
@@ -204,12 +214,10 @@ void
 OnFrameCallbackFun(GX_FRAME_CALLBACK_PARAM *pFrameData)
 {
     AcqCbArg_T* arg = pFrameData->pUserParam;
-    //StoredFrame_T *new_frame = g_atomic_rc_box_new(StoredFrame_T);
-    StoredFrameD_T* new_frame = sframealloc(FRAME_H, FRAME_W, 3);
+    StoredFrameD_T* new_frame = sframealloc(config.frameh[0], config.framew[0], 3);
 
     PixelFormatConvert(arg->pState, pFrameData);
     new_frame->id = pFrameData->nFrameID;
-    //memcpy(new_frame->data, arg->pState->RBGimageBuf, FRAME_H*FRAME_W*3);
     memcpy(sframedata(new_frame), arg->pState->RBGimageBuf, sframedatasize(new_frame));
     new_frame_push(arg->camId, new_frame);
     g_atomic_rc_box_release(new_frame);
@@ -239,16 +247,22 @@ camera_configure(void* param)
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
     // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
-    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_EXPOSURE_TIME, config.exposition);
+    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_EXPOSURE_TIME, config.exposition[camId]);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
     //Set gain
     camStatus =  GXSetEnum(CamHandle[camId], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
-    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_GAIN, config.gain);
+    camStatus = GXSetFloat(CamHandle[camId], GX_FLOAT_GAIN, config.gain[camId]);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXGetInt(CamHandle[camId], GX_INT_SENSOR_WIDTH, &config.camwmax[camId]);
+    check_cam_status_and_exit(__LINE__, camId, camStatus);
+
+    camStatus = GXGetInt(CamHandle[camId], GX_INT_SENSOR_HEIGHT, &config.camhmax[camId]);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
     printf("CAM %d opened\r\n", camId);
-    
+
     camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_X, FALSE);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
     camStatus = GXSetBool(CamHandle[camId], GX_BOOL_REVERSE_Y, FALSE);
@@ -260,7 +274,7 @@ camera_configure(void* param)
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRIGGER_ACTIVATION, GX_TRIGGER_ACTIVATION_RISINGEDGE);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
-/* 
+/*
     // PROBABLY NOT IMPLEMENTED:
     // Trigger configuration start
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_TRANSFER_CONTROL_MODE, GX_ENUM_TRANSFER_CONTROL_MODE_USERCONTROLED);
@@ -286,6 +300,42 @@ camera_configure(void* param)
 }
 
 
+static void
+camera_change_settings()
+{
+    GX_STATUS  camStatus = GX_STATUS_SUCCESS;
+
+    for (int k=0; k<2; k++) {
+        //Re- Set exposure
+        GXSetEnum(CamHandle[k], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
+        // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
+        GXSetFloat(CamHandle[k], GX_FLOAT_EXPOSURE_TIME, config.exposition[k]); //20ms
+        //Re- Set gain
+        GXSetEnum(CamHandle[k], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
+        GXSetFloat(CamHandle[k], GX_FLOAT_GAIN, config.gain[k]);
+
+        GXSetInt(CamHandle[k], GX_INT_WIDTH,    config.framew[k]);
+        GXSetInt(CamHandle[k], GX_INT_HEIGHT,   config.frameh[k]);
+        GXSetInt(CamHandle[k], GX_INT_OFFSET_X, config.offsetx[k]);
+        GXSetInt(CamHandle[k], GX_INT_OFFSET_Y, config.offsety[k]);
+
+        g_print("reset ROI\n");
+        camStatus = GXGetInt(CamHandle[k], GX_INT_WIDTH_MAX, &config.camwmax[k]);
+        check_cam_status_and_exit(__LINE__, k, camStatus);
+
+        camStatus = GXGetInt(CamHandle[k], GX_INT_HEIGHT_MAX, &config.camhmax[k]);
+        check_cam_status_and_exit(__LINE__, k, camStatus);
+
+        printf("NEW WH: %d %d\n",config.camwmax[k], config.camhmax[k] );
+        //!!!!
+        sframefree(frame[k]);
+        frame[k] = sframealloc(config.camhmax[k]/3, config.camwmax[k]/3, 3);
+
+        sframefree(frame_shadow[k]);
+        frame_shadow[k] = sframealloc(config.camhmax[k]/3, config.camwmax[k]/3, 3);
+    }
+}
+
 void*
 camera_acq_start(void* param)
 {
@@ -299,13 +349,13 @@ camera_acq_start(void* param)
 
     camStatus = GXSetEnum(CamHandle[camId], GX_ENUM_ACQUISITION_MODE, GX_ACQ_MODE_CONTINUOUS);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
-   
+
     camStatus = GXSendCommand(CamHandle[camId], GX_COMMAND_ACQUISITION_START);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
 
     if (camStatus != GX_STATUS_SUCCESS)
         return (void*)1;
-    
+
     return 0;
 }
 
@@ -318,11 +368,28 @@ camera_acq_stop(void* param)
 
     camStatus = GXSendCommand(CamHandle[camId], GX_COMMAND_ACQUISITION_STOP);
     check_cam_status_and_exit(__LINE__, camId, camStatus);
-    
+
     if (camStatus != GX_STATUS_SUCCESS)
         return (void*)1;
-    
+
     return 0;
+}
+
+
+static void
+acq_full_enable()
+{
+    acq_enable = TRUE;
+    if (!fake_cameras && (camera_acq_start(&CamId0) || camera_acq_start(&CamId1)))
+        acq_enable = FALSE;
+}
+
+static void
+acq_full_stop()
+{
+    acq_enable = FALSE;
+    if (!fake_cameras && (camera_acq_stop(&CamId0) || camera_acq_stop(&CamId1)))
+        acq_enable = TRUE;
 }
 
 
@@ -333,8 +400,8 @@ FakeFrameTask(void *param)
 
     const int brd = 100;
     const int sx = 200, sy = 200;
-    int x = brd + rand()%(FRAME_W-2*brd-sx),
-        y = brd + rand()%(FRAME_H-2*brd-sy);
+    int x = brd + rand()%(config.framew[0]-2*brd-sx),
+        y = brd + rand()%(config.frameh[0]-2*brd-sy);
     int xinc = 2, yinc = 2;
 
 
@@ -344,22 +411,22 @@ FakeFrameTask(void *param)
             continue;
         }
 
-        StoredFrameD_T* new_frame = sframealloc(FRAME_H, FRAME_W, 3);
+        StoredFrameD_T* new_frame = sframealloc(config.frameh[0], config.framew[0], 3);
         bzero(sframedata(new_frame), sframedatasize(new_frame));
         new_frame->id = state->frameId;
         state->frameId += 1;
 
         for (int j = y; j < y + sy; j++) {
             for (int i = x; i < x + sx; i++) {
-                unsigned char *pixel = getPixel(sframedata(new_frame), j, i, FRAME_W, 3);
+                unsigned char *pixel = getPixel(sframedata(new_frame), j, i, new_frame->w, new_frame->bpp);
                 pixel[0] = rand() % 256;
                 pixel[1] = rand() % 256;
                 pixel[2] = rand() % 256;
             }
         }
 
-        x += xinc; if (x + sx + brd >= FRAME_W || (x < brd)) xinc = -xinc;
-        y += yinc; if (y + sy + brd >= FRAME_H || (y < brd)) yinc = -yinc;
+        x += xinc; if (x + sx + brd >= new_frame->w || (x < brd)) xinc = -xinc;
+        y += yinc; if (y + sy + brd >= new_frame->h || (y < brd)) yinc = -yinc;
 
         new_frame_push(state->camId, new_frame);
         g_atomic_rc_box_release(new_frame);
@@ -370,61 +437,14 @@ FakeFrameTask(void *param)
 
 
 static void
-button_init(GtkWidget *widget, gpointer data)
-{
-    if (first_init) {
-        g_print("(Re-)initialising devices \n");
-        first_init = FALSE;
-        if (!init_devices()) {
-            camera_configure(&CamId0);
-            camera_configure(&CamId1);
-        } else {
-            fake_cameras = TRUE;
-            fakeFrameState[0].camId = 0;
-            fakeFrameState[0].frameId = 0;
-            pthread_t tid7;
-            pthread_attr_t attr7;
-            pthread_attr_init (&attr7);
-            pthread_create(&tid7, &attr7, FakeFrameTask, &fakeFrameState[0]);
-
-            fakeFrameState[1].camId = 1;
-            fakeFrameState[1].frameId = 0;
-            pthread_t tid8;
-            pthread_attr_t attr8;
-            pthread_attr_init (&attr8);
-            pthread_create(&tid8, &attr8, FakeFrameTask, &fakeFrameState[1]);
-        }
-    } else {
-        g_print("Already initialised \n");
-    }
-}
-
-
-static void
 button_acq_start(GtkWidget *widget, gpointer data)
 {
     ButtonIface_T *buttons = (ButtonIface_T *) data;
-    
+
     if (!acq_enable) {
         g_print("Starting acquisition \n");
-
-        if (gtk_toggle_button_get_active((GtkToggleButton*)buttons->swapDevBtn) && !cams_swapped) {
-            g_print("Swapping cameras\n");
-            SWAP(CamHandle[0], CamHandle[1]);
-            cams_swapped = TRUE;
-        }
-
-        if (!gtk_toggle_button_get_active((GtkToggleButton*)buttons->swapDevBtn) && cams_swapped) {
-            g_print("Swapping cameras\n");
-            SWAP(CamHandle[0], CamHandle[1]);
-            cams_swapped = FALSE;
-        }
-
-        acq_enable = TRUE;
-
-        if (!fake_cameras && (camera_acq_start(&CamId0) || camera_acq_start(&CamId1)))
-            acq_enable = FALSE;
-
+        camera_change_settings();
+        acq_full_enable();
     } else {
         g_print("Acquisition already running \n");
     }
@@ -436,9 +456,7 @@ button_acq_stop(GtkWidget *widget, gpointer data)
 {
     if (acq_enable) {
         g_print("Stopping acquisition \n");
-        acq_enable = FALSE;
-        if (!fake_cameras && (camera_acq_stop(&CamId0) || camera_acq_stop(&CamId1)))
-            acq_enable = TRUE;
+        acq_full_stop();
     } else {
         g_print("Acquisition not running \n");
     }
@@ -449,7 +467,7 @@ button_mirror_state(GtkWidget *widget, gpointer data)
 {
     ButtonIface_T *buttons = (ButtonIface_T *) data;
     GX_STATUS  camStatus = GX_STATUS_SUCCESS;
-    
+
     if (fake_cameras)
         return;
 
@@ -485,7 +503,7 @@ button_record(GtkWidget *widget, gpointer data)
   gtk_widget_set_sensitive(buttons->stopBtn, TRUE);
 
   if (!record_resume) {
-    strftime(config.dirname, 32, "%Y-%m-%d.%H:%M:%S", &CurrentDateTime);
+    strftime(config.dirname, 32, "%Y-%m-%d_%H%M%S", &CurrentDateTime);
     strncat(config.dirname + strlen(config.dirname), DirSuffix, strnlen(DirSuffix, sizeof(DirSuffix)));
     g_mkdir(config.dirname, 0777);
     record_resume = TRUE;
@@ -536,11 +554,45 @@ static void
 button_apply(GtkWidget *widget, gpointer data) {
     ButtonIface_T *buttons = (ButtonIface_T *) data;
     if (!record_on && !record_resume) {
-        const char *gainText = gtk_entry_get_text(GTK_ENTRY(buttons->gainEntry));
-        const char *expositionText = gtk_entry_get_text(GTK_ENTRY(buttons->expositionEntry));
+        acq_full_stop();
+        for (unsigned int k = 0; k < 2; k++) {
+            const char* gainText       = gtk_entry_get_text(GTK_ENTRY(buttons->gainEntry[k]));
+            const char* expositionText = gtk_entry_get_text(GTK_ENTRY(buttons->expositionEntry[k]));
+            const char* framewText     = gtk_entry_get_text(GTK_ENTRY(buttons->framewEntry[k]));
+            const char* framehText     = gtk_entry_get_text(GTK_ENTRY(buttons->framehEntry[k]));
+            const char* offsetxText    = gtk_entry_get_text(GTK_ENTRY(buttons->offsetxEntry[k]));
+            const char* offsetyText    = gtk_entry_get_text(GTK_ENTRY(buttons->offsetxEntry[k]));
 
-        config.gain = strtod(gainText, NULL);
-        config.exposition = strtod(expositionText, NULL);
+            config.gain[k]       = strtod(gainText, NULL);
+            config.exposition[k] = strtod(expositionText, NULL);
+            config.framew[k]     = strtod(framewText, NULL);
+            config.frameh[k]     = strtod(framehText, NULL);
+            config.offsetx[k]    = strtod(offsetxText, NULL);
+            config.offsety[k]    = strtod(offsetyText, NULL);
+
+            gchar *colorText = gtk_combo_box_text_get_active_text((GtkComboBoxText*)buttons->colorComboBox[k]);
+            if (!strcmp(colorText, "gray"))
+                config.mode[k] = MODE_GRAY;
+            if (!strcmp(colorText, "red"))
+                config.mode[k] = MODE_RED;
+            if (!strcmp(colorText, "green"))
+                config.mode[k] = MODE_GREEN;
+            if (!strcmp(colorText, "blue"))
+                config.mode[k] = MODE_BLUE;
+            g_free(colorText);
+
+            if (gtk_toggle_button_get_active((GtkToggleButton*)buttons->swapDevBtn) && !cams_swapped) {
+                g_print("Swapping cameras\n");
+                SWAP(CamHandle[0], CamHandle[1]);
+                cams_swapped = TRUE;
+             }
+
+            if (!gtk_toggle_button_get_active((GtkToggleButton*)buttons->swapDevBtn) && cams_swapped) {
+                g_print("Swapping cameras\n");
+                SWAP(CamHandle[0], CamHandle[1]);
+                cams_swapped = FALSE;
+            }
+        }
 
         const char *suffixText = gtk_entry_get_text(GTK_ENTRY(buttons->suffixEntry));
         if (strlen(suffixText) > 0) {
@@ -548,23 +600,12 @@ button_apply(GtkWidget *widget, gpointer data) {
             strncpy(DirSuffix+1, suffixText, sizeof(DirSuffix)-2);
         }
 
-        gchar *colorText = gtk_combo_box_text_get_active_text((GtkComboBoxText*)buttons->colorComboBox);
-        if (!strcmp(colorText, "gray"))
-            config.mode = MODE_GRAY;
-        if (!strcmp(colorText, "red"))
-            config.mode = MODE_RED;
-        if (!strcmp(colorText, "green"))
-            config.mode = MODE_GREEN;
-        if (!strcmp(colorText, "blue"))
-            config.mode = MODE_BLUE;
-        g_print(colorText);
-        g_print("\r\n");
-        g_free(colorText);
-
-        settings_changed = TRUE;
+        camera_change_settings();
+        acq_full_enable();
     }
 }
 
+/*
 unsigned char*
 rgb_bitmap_allocate(int width, int height)
 {
@@ -573,7 +614,7 @@ rgb_bitmap_allocate(int width, int height)
     memset(buf, 0, size);
     return buf;
 }
-
+*/
 
 void
 update_progress_bar()
@@ -600,37 +641,26 @@ ui_update_task(gpointer user_data)
     GdkPixbuf *pbuf;
     GBytes *raw_image;
 
-    raw_image = g_bytes_new(frame[0], 3*resolution_w*resolution_h);
-    pbuf = gdk_pixbuf_new_from_bytes (raw_image,
-                                      GDK_COLORSPACE_RGB, FALSE, 8, resolution_w, resolution_h, 3*resolution_w);
-    gtk_image_set_from_pixbuf (image0, pbuf);
-    g_bytes_unref(raw_image);
-    g_object_unref(pbuf);
+    for (unsigned int k=0; k<2; k++) {
+        raw_image = g_bytes_new(sframedata(frame[k]), sframedatasize(frame[k]));
+        pbuf = gdk_pixbuf_new_from_bytes(raw_image, GDK_COLORSPACE_RGB, FALSE, 8, frame[k]->w, frame[k]->h, frame[k]->bpp*frame[k]->w);
+        gtk_image_set_from_pixbuf(image[k], pbuf);
+        g_bytes_unref(raw_image);
+        g_object_unref(pbuf);
+    }
 
+/*
     raw_image = g_bytes_new(frame[1], 3*resolution_w*resolution_h);
-    pbuf = gdk_pixbuf_new_from_bytes(raw_image,
-                                     GDK_COLORSPACE_RGB, FALSE, 8, resolution_w, resolution_h, 3*resolution_w);
-    gtk_image_set_from_pixbuf(image1, pbuf);
+    pbuf = gdk_pixbuf_new_from_bytes(raw_image, GDK_COLORSPACE_RGB, FALSE, 8, resolution_w, resolution_h, 3*resolution_w);
+    gtk_image_set_from_pixbuf(image[1], pbuf);
     g_bytes_unref(raw_image);
     g_object_unref(pbuf);
+*/
 
     update_progress_bar();
 
-    if (settings_changed) {
-        for (int k=0; k<2; k++) {
-            //Re- Set exposure
-            GXSetEnum(CamHandle[k], GX_ENUM_EXPOSURE_MODE, GX_EXPOSURE_MODE_TIMED);
-            // Use `status = GXGetFloatRange(hDevice, GX_FLOAT_EXPOSURE_TIME, &shutterRange);` to get valid range
-            GXSetFloat(CamHandle[k], GX_FLOAT_EXPOSURE_TIME, config.exposition); //20ms
-            //Re- Set gain
-            GXSetEnum(CamHandle[k], GX_ENUM_GAIN_SELECTOR, GX_GAIN_SELECTOR_ALL);
-                GXSetFloat(CamHandle[k], GX_FLOAT_GAIN, config.gain);
-        }
-        settings_changed = FALSE;
-    } else {
-        if (record_on && (FramesRecorded[0] + FramesRecorded[1] >= config.frames_record_max*2))
-            record_on = FALSE;
-    }
+    if (record_on && (FramesRecorded[0] + FramesRecorded[1] >= config.frames_record_max*2))
+        record_on = FALSE;
 
     return TRUE;
 }
@@ -643,19 +673,18 @@ display_q_task(void* param)
     while (1) {
         StoredFrameD_T* next_frame = g_async_queue_pop(DisplayQ[camId]);
 
-        const int W = resolution_w * 3;
-        for (int j=0; j<resolution_h; j++) {
-            for (int i=0; i<resolution_w; i++)
-                memcpy(getPixel(frame_shadow[camId], j, i, resolution_w, 3),
-                                      getPixel(sframedata(next_frame), j*3, i*3, W, 3),
-                                                                          3);
+        for (int j=0; j<frame_shadow[camId]->h; j++) {
+            for (int i=0; i<frame_shadow[camId]->w; i++)
+                memcpy(getPixel(sframedata(frame_shadow[camId]), j, i, frame_shadow[camId]->w, frame_shadow[camId]->bpp),
+                                      getPixel(sframedata(next_frame), j*3, i*3, next_frame->w, next_frame->bpp),
+                                                                          frame_shadow[camId]->bpp);
         }
 
-        for (int j=0; j<resolution_h; j++) {
-            for (int i=0; i<resolution_w; i++) {
-                unsigned char *pixel = getPixel(frame_shadow[camId], j, i, resolution_w, 3);
+        for (int j=0; j<frame_shadow[camId]->h; j++) {
+            for (int i=0; i<frame_shadow[camId]->w; i++) {
+                unsigned char *pixel = getPixel(sframedata(frame_shadow[camId]), j, i, frame_shadow[camId]->w, frame_shadow[camId]->bpp);
                 unsigned char c;
-                switch(config.mode) {
+                switch(config.mode[camId]) {
                 case MODE_RED:
                     c = 255-pixel[0];
                     pixel[0] = pixel[1] = pixel[2] = c;
@@ -695,9 +724,9 @@ record_q_task(void* param)
         StoredFrameD_T* out_frame = sframealloc(in_frame->h, in_frame->w, 1);
 
         out_frame->id = in_frame->id;
-        fprintf(stdout, "Cam-%d frame %d actual id %ld\r\n", camId, FramesRecorded[camId], out_frame->id);
+        //fprintf(stdout, "Cam-%d frame %d actual id %ld\r\n", camId, FramesRecorded[camId], out_frame->id);
 
-        switch(config.mode) {
+        switch(config.mode[camId]) {
         case MODE_RED:
             RGB24RedtoGrayscale8(sframedata(in_frame), sframedata(out_frame), in_frame->h, in_frame->w);
             break;
@@ -769,9 +798,9 @@ main(int argc, char **argv)
     }
 
     gtk_init (&argc, &argv);
-    GtkBuilder *builder = gtk_builder_new ();
+    GtkBuilder *builder = gtk_builder_new();
 
-    if (gtk_builder_add_from_file (builder, "camera-control.glade", &error) == 0) {
+    if (gtk_builder_add_from_file(builder, "camera-control.glade", &error) == 0) {
       g_printerr ("Error loading file: %s\n", error->message);
       g_clear_error (&error);
       return 1;
@@ -786,7 +815,6 @@ main(int argc, char **argv)
     buttons.stopBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-stop"));
     buttons.resetBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-reset"));
     buttons.applyBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-apply"));
-    buttons.initBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-init-devices"));
     buttons.acqStartBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-acq-start"));
     buttons.acqStopBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-acq-stop"));
     buttons.swapDevBtn = GTK_WIDGET(gtk_builder_get_object (builder, "button-swap-devices"));
@@ -795,16 +823,26 @@ main(int argc, char **argv)
     buttons.hMirror[1] = GTK_WIDGET(gtk_builder_get_object (builder, "button-h-mirror-1"));
     buttons.wMirror[1] = GTK_WIDGET(gtk_builder_get_object (builder, "button-w-mirror-1"));
 
-    buttons.expositionEntry = GTK_WIDGET(gtk_builder_get_object (builder, "exposition-entry"));
-    buttons.gainEntry = GTK_WIDGET(gtk_builder_get_object (builder, "gain-entry"));
+    buttons.expositionEntry[0] = GTK_WIDGET(gtk_builder_get_object (builder, "exposition-entry-0"));
+    buttons.expositionEntry[1] = GTK_WIDGET(gtk_builder_get_object (builder, "exposition-entry-1"));
+    buttons.gainEntry[0] = GTK_WIDGET(gtk_builder_get_object (builder, "gain-entry-0"));
+    buttons.gainEntry[1] = GTK_WIDGET(gtk_builder_get_object (builder, "gain-entry-1"));
+    buttons.colorComboBox[0] = GTK_WIDGET(gtk_builder_get_object (builder, "combo-box-color-mode-0"));
+    buttons.colorComboBox[1] = GTK_WIDGET(gtk_builder_get_object (builder, "combo-box-color-mode-1"));
+    buttons.framewEntry[0] = GTK_WIDGET(gtk_builder_get_object (builder, "frame-w-entry-0"));
+    buttons.framewEntry[1] = GTK_WIDGET(gtk_builder_get_object (builder, "frame-w-entry-1"));
+    buttons.framehEntry[0] = GTK_WIDGET(gtk_builder_get_object (builder, "frame-h-entry-0"));
+    buttons.framehEntry[1] = GTK_WIDGET(gtk_builder_get_object (builder, "frame-h-entry-1"));
+    buttons.offsetxEntry[0] = GTK_WIDGET(gtk_builder_get_object (builder, "offset-x-entry-0"));
+    buttons.offsetxEntry[1] = GTK_WIDGET(gtk_builder_get_object (builder, "offset-x-entry-1"));
+    buttons.offsetyEntry[0] = GTK_WIDGET(gtk_builder_get_object (builder, "offset-y-entry-0"));
+    buttons.offsetyEntry[1] = GTK_WIDGET(gtk_builder_get_object (builder, "offset-y-entry-1"));
     buttons.suffixEntry = GTK_WIDGET(gtk_builder_get_object (builder, "suffix-entry"));
-    buttons.colorComboBox = GTK_WIDGET(gtk_builder_get_object (builder, "combo-box-color-mode"));
 
     g_signal_connect(G_OBJECT(buttons.recordBtn), "clicked", G_CALLBACK (button_record), &buttons);
     g_signal_connect(G_OBJECT(buttons.stopBtn),   "clicked", G_CALLBACK (button_stop), &buttons);
     g_signal_connect(G_OBJECT(buttons.resetBtn),  "clicked", G_CALLBACK (button_reset), &buttons);
     g_signal_connect(G_OBJECT(buttons.applyBtn),  "clicked", G_CALLBACK (button_apply), &buttons);
-    g_signal_connect(G_OBJECT(buttons.initBtn),  "clicked", G_CALLBACK (button_init), &buttons);
     g_signal_connect(G_OBJECT(buttons.acqStartBtn),  "clicked", G_CALLBACK (button_acq_start), &buttons);
     g_signal_connect(G_OBJECT(buttons.acqStopBtn),  "clicked", G_CALLBACK (button_acq_stop), &buttons);
     g_signal_connect(G_OBJECT(buttons.hMirror[0]), "toggled", G_CALLBACK(button_mirror_state), &buttons);
@@ -815,14 +853,35 @@ main(int argc, char **argv)
     progress_bar = GTK_WIDGET(gtk_builder_get_object (builder, "progress-bar"));
     gtk_progress_bar_set_show_text (GTK_PROGRESS_BAR(progress_bar), TRUE);
 
-    image0 = GTK_IMAGE(gtk_builder_get_object (builder, "image-0"));
-    image1 = GTK_IMAGE(gtk_builder_get_object (builder, "image-1"));
+    g_print("Initialising devices \n");
+    if (!init_devices()) {
+        camera_configure(&CamId0);
+        camera_configure(&CamId1);
+    } else {
+        fake_cameras = TRUE;
+        fakeFrameState[0].camId = 0;
+        fakeFrameState[0].frameId = 0;
+        pthread_t tid7;
+        pthread_attr_t attr7;
+        pthread_attr_init (&attr7);
+        pthread_create(&tid7, &attr7, FakeFrameTask, &fakeFrameState[0]);
 
+        fakeFrameState[1].camId = 1;
+        fakeFrameState[1].frameId = 0;
+        pthread_t tid8;
+        pthread_attr_t attr8;
+        pthread_attr_init (&attr8);
+        pthread_create(&tid8, &attr8, FakeFrameTask, &fakeFrameState[1]);
+    }
 
-    frame[0] = rgb_bitmap_allocate (resolution_w, resolution_h);
-    frame[1] = rgb_bitmap_allocate (resolution_w, resolution_h);
-    frame_shadow[0] = rgb_bitmap_allocate (resolution_w, resolution_h);
-    frame_shadow[1] = rgb_bitmap_allocate (resolution_w, resolution_h);
+    for (unsigned int k=0; k<2; k++)
+        frame[k] = sframealloc(config.camhmax[k]/3, config.camwmax[k]/3, 3);
+
+    for (unsigned int k=0; k<2; k++)
+        frame_shadow[k] = sframealloc(config.camhmax[k]/3, config.camwmax[k]/3, 3);
+
+    image[0] = GTK_IMAGE(gtk_builder_get_object(builder, "image-0"));
+    image[1] = GTK_IMAGE(gtk_builder_get_object(builder, "image-1"));
 
     for (unsigned int k=0; k<2; k++) {
         StoreQ[k]   = g_async_queue_new();
@@ -838,6 +897,8 @@ main(int argc, char **argv)
         pthread_attr_init (&worker[i].attr);
         pthread_create (&worker[i].tid, &worker[i].attr, worker[i].proc, worker[i].args);
     }
+
+
 
     gtk_main();
 
